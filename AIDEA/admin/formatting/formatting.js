@@ -907,7 +907,7 @@ function loadThesisChecklist() {
 })();
 /* FORMAT_TEMPLATES_SERVER_SYNC: templates are saved on the server so students can use them */
 (function () {
-    var API = 'https://aideanc-production.up.railway.app/api';
+    var API = 'https://aideanc-production-84b5.up.railway.app/api';
     function token() { try { return localStorage.getItem('auth_token'); } catch (e) { return null; } }
     function asList(res) { return Array.isArray(res) ? res : ((res && res.templates) || []); }
     function call(method, body) {

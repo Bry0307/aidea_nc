@@ -112,7 +112,7 @@ document.addEventListener('DOMContentLoaded', () => {
         console.groupEnd();
 
         try {
-            const response = await fetch('https://aideanc-production.up.railway.app/api/thesis/submit', {
+            const response = await fetch('https://aideanc-production-84b5.up.railway.app/api/thesis/submit', {
                 method: 'POST',
                 headers: {
                     'Accept': 'application/json',

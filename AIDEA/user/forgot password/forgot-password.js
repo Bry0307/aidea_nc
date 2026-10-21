@@ -1,6 +1,6 @@
 document.addEventListener('DOMContentLoaded', () => {
 
-    const API_BASE = 'https://aideanc-production.up.railway.app/api';
+    const API_BASE = 'https://aideanc-production-84b5.up.railway.app/api';
     const THEME_KEY = 'aidea_user_theme';
 
     /* ── STATE ── */

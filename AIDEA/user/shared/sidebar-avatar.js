@@ -1,5 +1,5 @@
 (function () {
-  var API = 'https://aideanc-production.up.railway.app/api';
+  var API = 'https://aideanc-production-84b5.up.railway.app/api';
   var KEY = 'aidea_avatar_url';
 
   function cached() { try { return localStorage.getItem(KEY) || ''; } catch (e) { return ''; } }

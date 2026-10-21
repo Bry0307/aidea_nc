@@ -6,7 +6,7 @@
    chrome: theme toggle, mobile drawer, profile menu, sign-out modal.
 ================================================== */
 
-const API_BASE = 'https://aideanc-production.up.railway.app/api';
+const API_BASE = 'https://aideanc-production-84b5.up.railway.app/api';
 const LOGIN_URL = '../login/login.html';
 
 /* -- API helper -- */

@@ -3,7 +3,7 @@
     'use strict';
 
     const API_BASE = window.API_BASE ||
-        ((location.protocol.indexOf('http') === 0 && location.port === '8000') ? '' : 'https://aideanc-production.up.railway.app');
+        ((location.protocol.indexOf('http') === 0 && location.port === '8000') ? '' : 'https://aideanc-production-84b5.up.railway.app');
     const TOKEN_KEY = 'aidea_report_token';   // same key as the Report Generator: one paste covers every page in this tab
 
     function el(tag, cls, text) {

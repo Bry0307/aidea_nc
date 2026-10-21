@@ -1,7 +1,7 @@
 // my-profile.js — My Profile (student side)
 // Self-contained (like dashboard.js): reads the session from localStorage.
 
-const API_BASE = 'https://aideanc-production.up.railway.app/api';
+const API_BASE = 'https://aideanc-production-84b5.up.railway.app/api';
 const LOGIN_URL = '../login/login.html';
 const THEME_KEY = 'aidea_user_theme'; // shared with the other student pages
 
