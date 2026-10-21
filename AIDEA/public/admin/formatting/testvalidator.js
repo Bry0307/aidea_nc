@@ -1,0 +1,3502 @@
+// thesis_validator.js
+// AIDEA – Norzagaray College
+// Validates that an uploaded file is actually a thesis / research paper / capstone
+// before allowing Format Check or Plagiarism Check to proceed.
+//
+// FIX: thesis.file from the API is a plain object {name, size, type, url} — not a real
+//      File object. When .arrayBuffer() is unavailable, the file is fetched via its URL.
+//      Plain API file objects now go through the SAME full validation (keyword scoring +
+//      formatting analysis) as real File objects — the old shortcut that skipped
+//      validation entirely for API-provided files has been removed.
+//
+// NEW: Real formatting checks (spacing / margins / indentation / alignment), pulled
+//      from an ADMIN-SELECTED active template in localStorage (written by formatting.js),
+//      or a built-in default thesis format if none is chosen. Two downloadable outputs
+//      are generated from the checked file:
+//        1) a REDLINED copy — problem paragraphs highlighted + a red inline note
+//        2) an AUTO-FIXED copy — spacing/margins/indentation/alignment corrected
+//      DOCX generation is exact (works directly on the document XML). PDF generation
+//      is best-effort: redlining overlays highlights/notes on the original pages;
+//      auto-fixing re-typesets the extracted text with the target formatting, since
+//      an existing PDF's internal spacing can't be reliably reflowed client-side —
+//      the fixed PDF says so on its first page.
+//
+// NEW (user/student side): openDocValidationModalForFile(file, actionLabel, onValidCallback)
+//      Mirrors openDocValidationModal but works directly off a File object the student
+//      picks, instead of a thesisId looked up from window.theses. If no file is passed
+//      yet, the modal shows an inline picker first. Produces the exact same two
+//      downloads (redlined copy + auto-fixed copy) via the shared generators.
+//
+// PATCH 1 (modal fallback): this script no longer assumes window.openModal / window.closeModal
+//      exist globally. formatting.js (admin page) defines those globally, but
+//      submit-thesis.html (student page) does NOT load formatting.js — only this
+//      validator. Every internal call now goes through _dvOpenModal / _dvCloseModal,
+//      which use window.openModal/closeModal when available (admin page) and fall back
+//      to a local show/hide implementation otherwise (student page).
+//
+// PATCH 2 (template picker restored): earlier this version silently picked whichever
+//      active template _getFormatRules() found first — there was no way for the
+//      student or admin to choose WHICH paper / format template ("Proposal",
+//      "Final Defense", "Revised Final", etc.) to check the file against. Both entry
+//      points now render a picker step first: file (student can upload/replace it;
+//      admin sees the known submission file) + a dropdown of active templates from
+//      Format Templates (formatting.js). Only after the user picks a template and
+//      clicks "Run" does the actual check execute against that chosen template's rules.
+//      A "← Change" button on the result screen lets the user go back and re-pick.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const _WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+
+/* ══════════════════════════════════════════
+   SMALL UTILS
+══════════════════════════════════════════ */
+function _escHtml(str) {
+    if (str == null) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+/* ══════════════════════════════════════════
+   MODAL SHOW/HIDE — self-contained fallback
+   Uses window.openModal / window.closeModal when the host page
+   provides them (admin pages that load formatting.js). Otherwise
+   falls back to toggling display directly, so this script also
+   works standalone on pages like submit-thesis.html.
+══════════════════════════════════════════ */
+function _dvOpenModal(id) {
+    if (typeof window.openModal === 'function') {
+        window.openModal(id);
+        return;
+    }
+    const el = document.getElementById(id);
+    if (el) {
+        el.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+    }
+}
+function _dvCloseModal(id) {
+    if (typeof window.closeModal === 'function') {
+        window.closeModal(id);
+        return;
+    }
+    const el = document.getElementById(id);
+    if (el) {
+        el.style.display = 'none';
+        document.body.style.overflow = '';
+    }
+}
+// Backward/forward-compatible global alias some pages/buttons may call directly.
+window.closeDocValidationModal = () => _dvCloseModal('docValidationModal');
+window._dvOpenModal = _dvOpenModal;
+window._dvCloseModal = _dvCloseModal;
+
+/* ══════════════════════════════════════════
+   LAZY-LOAD DEPENDENCIES
+══════════════════════════════════════════ */
+const _validatorDeps = {
+    loadScript(src, onload) {
+        this._pending = this._pending || {};
+        this._loaded = this._loaded || {};
+        if (this._loaded[src]) { onload(); return; }
+        if (this._pending[src]) { this._pending[src].push(onload); return; }
+        if (document.querySelector('script[src="' + src + '"]')) { onload(); return; }
+        this._pending[src] = [onload];
+        const done = ok => {
+            const q = this._pending[src] || [];
+            delete this._pending[src];
+            if (ok) this._loaded[src] = true;
+            q.forEach(fn => { try { fn(); } catch (e) { console.warn('[Validator] callback error:', e); } });
+        };
+        const s = document.createElement('script');
+        s.src = src;
+        s.onload = () => done(true);
+        s.onerror = () => { console.warn('[Validator] Failed to load:', src); s.remove(); done(false); };
+        document.head.appendChild(s);
+    },
+
+    ensurePdfJs(cb) {
+        if (window.pdfjsLib) { cb(); return; }
+        this.loadScript(
+            'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js',
+            () => {
+                if (window.pdfjsLib) {
+                    pdfjsLib.GlobalWorkerOptions.workerSrc =
+                        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+                }
+                cb();
+            }
+        );
+    },
+
+    ensureJSZip(cb) {
+        if (window.JSZip) { cb(); return; }
+        this.loadScript(
+            'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+            cb
+        );
+    },
+
+    ensurePdfLib(cb) {
+        if (window.PDFLib) { cb(); return; }
+        this.loadScript(
+            'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js',
+            cb
+        );
+    },
+};
+
+/* ══════════════════════════════════════════
+   HELPER: Resolve an ArrayBuffer from either
+   a real File object OR a plain {name, url} object
+══════════════════════════════════════════ */
+async function _resolveArrayBuffer(file) {
+    // Real File / Blob — has .arrayBuffer() natively
+    if (typeof file.arrayBuffer === 'function') {
+        return file.arrayBuffer();
+    }
+
+    // Plain metadata object from API — fetch via URL
+    if (file.url) {
+        const res = await fetch(file.url);
+        if (!res.ok) throw new Error(`Failed to fetch file (HTTP ${res.status})`);
+        return res.arrayBuffer();
+    }
+
+    throw new Error('file.arrayBuffer is not a function and no URL available');
+}
+
+/* ══════════════════════════════════════════
+   INDICATOR DICTIONARIES
+══════════════════════════════════════════ */
+const _THESIS_SIGNALS = {
+    structural: [
+        'chapter 1', 'chapter 2', 'chapter 3', 'chapter 4', 'chapter 5',
+        'background of the study', 'statement of the problem',
+        'review of related literature', 'review of related studies',
+        'theoretical framework', 'conceptual framework',
+        'scope and limitation', 'scope and delimitation',
+        'significance of the study', 'definition of terms',
+        'research methodology', 'research design',
+        'data gathering', 'data collection', 'data analysis',
+        'findings and discussion', 'summary of findings',
+        'conclusions and recommendations', 'bibliography', 'references',
+    ],
+    academic: [
+        'this study aims', 'the purpose of this study', 'this research',
+        'the researchers', 'this paper', 'proposed system', 'capstone project',
+        'the proponents', 'general objective', 'specific objective',
+        'null hypothesis', 'alternative hypothesis', 'hypothesis',
+        'respondents', 'locale of the study', 'population and sample',
+        'instrument used', 'statistical treatment', 'weighted mean',
+        'likert scale', 'related literature', 'related studies',
+        'norzagaray college', 'college of computing',
+    ],
+    weak: [
+        'introduction', 'abstract', 'methodology', 'conclusion',
+        'recommendation', 'acknowledgment', 'table of contents',
+        'list of figures', 'list of tables', 'appendix', 'appendices',
+        'adviser', 'panel of examiners', 'thesis title',
+    ],
+};
+
+const _INVALID_SIGNALS = {
+    definite: [
+        'official receipt', 'payment receipt', 'total amount',
+        'gcash ref', 'transaction id', 'txn-', 'invoice no',
+        'amount due', 'balance due', 'grand total',
+        'certificate of', 'this is to certify that',
+        'barangay clearance', 'police clearance', 'nbi clearance',
+        'birth certificate', 'marriage certificate',
+        'philhealth', 'sss contribution', 'bir form',
+        'purchase order', 'delivery receipt', 'sales invoice',
+    ],
+    likely: [
+        'dear sir', 'dear ma\'am', 'to whom it may concern',
+        'sincerely yours', 'respectfully yours', 'yours truly',
+        'student id', 'employee id', 'id number',
+        'reference number', 'ref #', 'or number',
+        'paid', 'unpaid', 'balance', 'payment method',
+        'cash', 'gcash', 'maya', 'bank transfer',
+    ],
+};
+
+const _DOC_TYPE_LABELS = {
+    thesis: { label: 'Thesis / Research Paper', icon: '📄', color: '#22c55e' },
+    capstone: { label: 'Thesis / Research Paper', icon: '📄', color: '#22c55e' },
+    receipt: { label: 'Payment Receipt', icon: '🧾', color: '#ef4444' },
+    certificate: { label: 'Certificate / Clearance', icon: '📜', color: '#ef4444' },
+    letter: { label: 'Letter / Correspondence', icon: '✉️', color: '#f59e0b' },
+    unknown: { label: 'Unknown Document', icon: '❓', color: '#888' },
+    unreadable: { label: 'Unreadable / Image-only PDF', icon: '🖼️', color: '#f59e0b' },
+};
+
+/* ══════════════════════════════════════════
+   TEXT EXTRACTION
+══════════════════════════════════════════ */
+
+async function _extractPdfText(file) {
+    return new Promise((resolve, reject) => {
+        _validatorDeps.ensurePdfJs(async () => {
+            if (!window.pdfjsLib) { reject(new Error('pdf.js unavailable')); return; }
+            try {
+                const arrayBuffer = await _resolveArrayBuffer(file);
+                const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                const maxPages = Math.min(pdf.numPages, 15);
+                let text = '';
+                for (let i = 1; i <= maxPages; i++) {
+                    const page = await pdf.getPage(i);
+                    const content = await page.getTextContent();
+                    text += content.items.map(s => s.str).join(' ') + '\n';
+                }
+                resolve({ text, pages: pdf.numPages });
+            } catch (e) {
+                reject(e);
+            }
+        });
+    });
+}
+
+async function _extractDocxText(file) {
+    return new Promise((resolve, reject) => {
+        _validatorDeps.ensureJSZip(async () => {
+            if (!window.JSZip) { reject(new Error('JSZip unavailable')); return; }
+            try {
+                const arrayBuffer = await _resolveArrayBuffer(file);
+                const zip = await JSZip.loadAsync(arrayBuffer);
+                const xmlFile = zip.file('word/document.xml');
+                if (!xmlFile) { reject(new Error('Not a valid DOCX')); return; }
+                const xmlStr = await xmlFile.async('string');
+                const parser = new DOMParser();
+                const xmlDoc = parser.parseFromString(xmlStr, 'application/xml');
+                const textNodes = xmlDoc.getElementsByTagNameNS(_WORD_NS, 't');
+                const text = Array.from(textNodes).map(n => n.textContent).join(' ');
+                resolve({ text, pages: null });
+            } catch (e) {
+                reject(e);
+            }
+        });
+    });
+}
+
+async function _extractFileText(file) {
+    // Resolve the file name from either a real File or a plain {name, url} object
+    const name = (typeof file.name === 'string' ? file.name : '') || '';
+    const ext = name.split('.').pop().toLowerCase();
+
+    if (ext === 'pdf') return _extractPdfText(file);
+    if (ext === 'docx') return _extractDocxText(file);
+    if (ext === 'doc') return { text: '', pages: null, unsupported: true };
+    return { text: '', pages: null, unsupported: true };
+}
+
+/* ══════════════════════════════════════════
+   REAL FORMATTING ANALYSIS
+   (spacing / margins / indentation / alignment)
+
+   DOCX is parsed directly from word/document.xml — exact values.
+   PDF has no structural markup, so spacing/margins/indentation are ESTIMATED
+   from raw text-item positions. Anything derived this way is flagged
+   `estimated: true` and surfaced as "estimated — verify manually".
+══════════════════════════════════════════ */
+
+const _TWIPS_PER_INCH = 1440;
+const _POINTS_PER_INCH = 72;
+
+const _RULE_TOLERANCE_DEFAULTS = {
+    spacing: 0.1,       // +/- 0.1 line-height multiplier
+    indentation: 0.06,  // +/- 0.06 inch
+    margin: 0.08,       // +/- 0.08 inch per side
+};
+
+// Sensible thesis-format defaults, used when no template is selected.
+const _DEFAULT_FORMAT_RULES = [
+    { id: 'default-spacing', name: 'Line Spacing', type: 'spacing', value: 1.5, detail: 'Body text should use 1.5 line spacing.' },
+    { id: 'default-margin', name: 'Page Margins', type: 'margin', value: { top: 1, bottom: 1, left: 1.5, right: 1 }, detail: 'Standard thesis margins (inches) — 1.5" on the binding side.' },
+    { id: 'default-indent', name: 'First-line Indent', type: 'indentation', value: 0.5, detail: 'Paragraphs should start with a 0.5" first-line indent.' },
+    { id: 'default-align', name: 'Paragraph Alignment', type: 'alignment', value: 'justified', detail: 'Body text should be justified.' },
+];
+
+const _TEMPLATE_STORAGE_KEY = 'aidea_format_templates';
+
+// All templates the admin has marked Active — used to populate the picker dropdown.
+function _getActiveFormatTemplatesOriginal() {
+    try {
+        const all = JSON.parse(localStorage.getItem(_TEMPLATE_STORAGE_KEY) || '[]');
+        return all.filter(t => t && t.id != null).sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
+    } catch (e) {
+        console.warn('[Validator] Could not read admin templates:', e);
+        return [];
+    }
+}
+
+// Resolves the rule set to actually check the file against.
+// If `templateId` is given (student/admin picked a specific template in the
+// picker step), that template's rules are used. Otherwise falls back to the
+// first active template with rules, then to the built-in defaults.
+function _getFormatRulesOriginal(templateId) {
+    try {
+        const templates = JSON.parse(localStorage.getItem(_TEMPLATE_STORAGE_KEY) || '[]');
+
+        if (templateId != null && templateId !== '') {
+            const chosen = templates.find(t => t && String(t.id) === String(templateId));
+            if (chosen) {
+                const rules = (Array.isArray(chosen.rules) && chosen.rules.length) ? chosen.rules : _DEFAULT_FORMAT_RULES;
+                return { rules, source: chosen.name || 'Selected Template', template: chosen };
+            }
+        }
+
+        const active = templates.find(t => t && t.active && Array.isArray(t.rules) && t.rules.length);
+        if (active) return { rules: active.rules, source: active.name || 'Admin Template', template: active };
+    } catch (e) {
+        console.warn('[Validator] Could not read admin templates, using defaults:', e);
+    }
+    return { rules: _DEFAULT_FORMAT_RULES, source: 'Default Thesis Format', template: null };
+}
+
+function _alignNormalize(val) {
+    if (!val) return null;
+    const v = String(val).toLowerCase();
+    if (['justify', 'justified', 'both'].includes(v)) return 'justified';
+    if (['left', 'start'].includes(v)) return 'left';
+    if (['right', 'end'].includes(v)) return 'right';
+    if (v === 'center' || v === 'centre') return 'center';
+    return v;
+}
+
+/* ---------- DOCX: exact formatting from document.xml ---------- */
+async function _extractDocxFormatting(file) {
+    return new Promise((resolve, reject) => {
+        _validatorDeps.ensureJSZip(async () => {
+            if (!window.JSZip) { reject(new Error('JSZip unavailable')); return; }
+            try {
+                const arrayBuffer = await _resolveArrayBuffer(file);
+                const zip = await JSZip.loadAsync(arrayBuffer);
+                const xmlFile = zip.file('word/document.xml');
+                if (!xmlFile) { reject(new Error('Not a valid DOCX')); return; }
+                const xmlStr = await xmlFile.async('string');
+                const parser = new DOMParser();
+                const xmlDoc = parser.parseFromString(xmlStr, 'application/xml');
+
+                let margins = null;
+                const sectPrs = xmlDoc.getElementsByTagNameNS(_WORD_NS, 'sectPr');
+                if (sectPrs.length) {
+                    const sectPr = sectPrs[sectPrs.length - 1];
+                    const pgMarEls = sectPr.getElementsByTagNameNS(_WORD_NS, 'pgMar');
+                    if (pgMarEls.length) {
+                        const pgMar = pgMarEls[0];
+                        const get = attr => {
+                            const v = pgMar.getAttributeNS(_WORD_NS, attr);
+                            return v ? parseFloat(v) / _TWIPS_PER_INCH : null;
+                        };
+                        margins = { top: get('top'), bottom: get('bottom'), left: get('left'), right: get('right') };
+                    }
+                }
+
+                const paragraphs = [];
+                let zone = "front";
+                const pEls = xmlDoc.getElementsByTagNameNS(_WORD_NS, 'p');
+                for (let i = 0; i < pEls.length; i++) {
+                    const p = pEls[i];
+                    const tNodes = p.getElementsByTagNameNS(_WORD_NS, 't');
+                    const text = Array.from(tNodes).map(n => n.textContent).join('').trim();
+                    if (!text) continue;
+                    const upper=text.toUpperCase();
+                    const header=/^(CHAPTER\s|ABSTRACT$|APPROVAL SHEET$|ACKNOWLEDGEMENTS?$|TABLE OF CONTENTS$|LIST OF (?:TABLES|FIGURES|APPENDICES)$|REFERENCES$|APPENDICES$|APPENDIX\s+[A-Z]\b)/i.test(text);
+                    if (upper==='ABSTRACT') zone='abstract';
+                    else if (/curriculum\s+vitae/i.test(text) && text.length<180) zone='cv';
+                    else if (header) zone='body';
+                    let layoutExcluded=p.getElementsByTagNameNS(_WORD_NS,'drawing').length>0 || p.getElementsByTagNameNS(_WORD_NS,'pict').length>0 || p.getElementsByTagNameNS(_WORD_NS,'object').length>0;
+                    for(let parent=p.parentNode;parent && parent.nodeType===1;parent=parent.parentNode){if(parent.namespaceURI===_WORD_NS && ['tbl','txbxContent'].includes(parent.localName))layoutExcluded=true;}
+
+                    const pPrList = p.getElementsByTagNameNS(_WORD_NS, 'pPr');
+                    const pPr = pPrList.length ? pPrList[0] : null;
+
+                    let lineSpacing = null, lineRule = null;
+                    let firstLineIndent = null;
+                    let alignment = null;
+
+                    if (pPr) {
+                        const spacingEls = pPr.getElementsByTagNameNS(_WORD_NS, 'spacing');
+                        if (spacingEls.length) {
+                            const sp = spacingEls[0];
+                            const lineVal = sp.getAttributeNS(_WORD_NS, 'line');
+                            lineRule = sp.getAttributeNS(_WORD_NS, 'lineRule') || 'auto';
+                            if (lineVal) {
+                                lineSpacing = lineRule === 'auto'
+                                    ? +(parseFloat(lineVal) / 240).toFixed(2)
+                                    : +(parseFloat(lineVal) / 20).toFixed(1); // atLeast/exact -> points
+                            }
+                        }
+                        const indEls = pPr.getElementsByTagNameNS(_WORD_NS, 'ind');
+                        if (indEls.length) {
+                            const ind = indEls[0];
+                            const firstLine = ind.getAttributeNS(_WORD_NS, 'firstLine');
+                            const hanging = ind.getAttributeNS(_WORD_NS, 'hanging');
+                            if (firstLine) firstLineIndent = +(parseFloat(firstLine) / _TWIPS_PER_INCH).toFixed(2);
+                            else if (hanging) firstLineIndent = +(-parseFloat(hanging) / _TWIPS_PER_INCH).toFixed(2);
+                        }
+                        const jcEls = pPr.getElementsByTagNameNS(_WORD_NS, 'jc');
+                        if (jcEls.length) {
+                            alignment = _alignNormalize(jcEls[0].getAttributeNS(_WORD_NS, 'val'));
+                        }
+                    }
+
+                    paragraphs.push({
+                        index: i,
+                        snippet: text.slice(0, 70) + (text.length > 70 ? '…' : ''),
+                        lineSpacing, lineRule, zone, header, layoutExcluded,
+                        firstLineIndent, alignment,
+                    });
+                }
+
+                resolve({ source: 'docx', estimated: false, margins, paragraphs });
+            } catch (e) {
+                reject(e);
+            }
+        });
+    });
+}
+
+/* ---------- PDF: heuristic formatting from text-item positions ---------- */
+async function _extractPdfFormatting(file) {
+    return new Promise((resolve, reject) => {
+        _validatorDeps.ensurePdfJs(async () => {
+            if (!window.pdfjsLib) { reject(new Error('pdf.js unavailable')); return; }
+            try {
+                const arrayBuffer = await _resolveArrayBuffer(file);
+                const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                const maxPages = Math.min(pdf.numPages, 8);
+                const paragraphs = [];
+                const marginSamples = { left: [], right: [], top: [], bottom: [] };
+
+                for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+                    const page = await pdf.getPage(pageNum);
+                    const viewport = page.getViewport({ scale: 1 });
+                    const pageWidthIn = viewport.width / _POINTS_PER_INCH;
+                    const pageHeightIn = viewport.height / _POINTS_PER_INCH;
+                    const content = await page.getTextContent();
+
+                    const items = content.items
+                        .filter(it => it.str && it.str.trim())
+                        .map(it => ({
+                            str: it.str,
+                            x: it.transform[4],
+                            y: it.transform[5],
+                            fontSize: Math.hypot(it.transform[2], it.transform[3]) || it.height || 10,
+                        }));
+                    if (!items.length) continue;
+
+                    items.sort((a, b) => b.y - a.y || a.x - b.x);
+                    const lines = [];
+                    let current = null;
+                    const Y_TOL = 2;
+                    items.forEach(it => {
+                        if (current && Math.abs(current.y - it.y) <= Y_TOL) {
+                            current.items.push(it);
+                        } else {
+                            current = { y: it.y, items: [it] };
+                            lines.push(current);
+                        }
+                    });
+
+                    const xs = items.map(it => it.x);
+                    const ys = items.map(it => it.y);
+                    marginSamples.left.push(Math.min(...xs) / _POINTS_PER_INCH);
+                    marginSamples.right.push(pageWidthIn - Math.max(...xs) / _POINTS_PER_INCH);
+                    marginSamples.top.push(pageHeightIn - Math.max(...ys) / _POINTS_PER_INCH);
+                    marginSamples.bottom.push(Math.min(...ys) / _POINTS_PER_INCH);
+
+                    for (let li = 1; li < lines.length; li++) {
+                        const prev = lines[li - 1], cur = lines[li];
+                        const fontSize = cur.items[0].fontSize || 10;
+                        const deltaY = Math.abs(prev.y - cur.y);
+                        const lineSpacing = fontSize ? +(deltaY / fontSize).toFixed(2) : null;
+                        const lineStartX = cur.items[0].x;
+                        const text = cur.items.map(it => it.str).join('').trim();
+                        if (!text) continue;
+                        paragraphs.push({
+                            index: paragraphs.length,
+                            page: pageNum,
+                            y: cur.y,
+                            height: fontSize,
+                            snippet: text.slice(0, 70) + (text.length > 70 ? '…' : ''),
+                            text,
+                            lineSpacing,
+                            lineStartX,
+                        });
+                    }
+                }
+
+                const avg = arr => arr.length ? +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(2) : null;
+                const margins = {
+                    left: avg(marginSamples.left), right: avg(marginSamples.right),
+                    top: avg(marginSamples.top), bottom: avg(marginSamples.bottom),
+                };
+
+                const typicalLeftX = margins.left != null ? margins.left * _POINTS_PER_INCH : null;
+                paragraphs.forEach(p => {
+                    if (typicalLeftX != null && p.lineStartX != null) {
+                        const deltaIn = (p.lineStartX - typicalLeftX) / _POINTS_PER_INCH;
+                        p.firstLineIndent = deltaIn > 0.15 ? +deltaIn.toFixed(2) : 0;
+                    }
+                });
+
+                resolve({ source: 'pdf', estimated: true, margins, paragraphs });
+            } catch (e) {
+                reject(e);
+            }
+        });
+    });
+}
+
+async function _extractFormattingProfile(file) {
+    const name = (typeof file.name === 'string' ? file.name : '') || '';
+    const ext = name.split('.').pop().toLowerCase();
+    if (ext === 'docx') return _extractDocxFormatting(file);
+    if (ext === 'pdf') return _extractPdfFormatting(file);
+    return null; // .doc or unsupported — no structural check possible
+}
+
+function _evaluateFormattingRuleRaw(rule, profile) {
+    if (!profile) return null;
+
+    const type = (rule.type || '').toLowerCase();
+    const tolerance = typeof rule.tolerance === 'number' ? rule.tolerance : _RULE_TOLERANCE_DEFAULTS[type];
+
+    if (['spacing','abstract-spacing','cv-spacing'].includes(type)) {
+        const target = parseFloat(rule.value);
+        if (Number.isNaN(target)) return null;
+        const checked = profile.paragraphs.filter(p => p.lineSpacing != null && !p.layoutExcluded && (!p.lineRule || p.lineRule==='auto') &&
+            (type==='abstract-spacing' ? p.zone==='abstract' && !p.header : type==='cv-spacing' ? p.zone==='cv' : !['abstract','cv','front'].includes(p.zone)));
+        if (!checked.length) return { status: 'manual', violations: [], checkedCount: 0 };
+        const violations = checked
+            .filter(p => Math.abs(p.lineSpacing - target) > (tolerance ?? _RULE_TOLERANCE_DEFAULTS.spacing))
+            .map(p => ({ ...p, actual: p.lineSpacing }));
+        return { status: violations.length ? 'fail' : 'pass', violations, checkedCount: checked.length, target, unit: 'x line height' };
+    }
+
+    if (type === 'indentation') {
+        const target = parseFloat(rule.value);
+        if (Number.isNaN(target)) return null;
+        const checked = profile.paragraphs.filter(p => p.firstLineIndent != null);
+        if (!checked.length) return { status: 'manual', violations: [], checkedCount: 0 };
+        const violations = checked
+            .filter(p => Math.abs(p.firstLineIndent - target) > tolerance)
+            .map(p => ({ ...p, actual: p.firstLineIndent }));
+        return { status: violations.length ? 'fail' : 'pass', violations, checkedCount: checked.length, target, unit: 'in' };
+    }
+
+    if (type === 'alignment') {
+        const target = _alignNormalize(rule.value);
+        if (!target) return null;
+        const checked = profile.paragraphs.filter(p => p.alignment);
+        if (!checked.length) return { status: 'manual', violations: [], checkedCount: 0 };
+        const violations = checked
+            .filter(p => p.alignment !== target)
+            .map(p => ({ ...p, actual: p.alignment }));
+        return { status: violations.length ? 'fail' : 'pass', violations, checkedCount: checked.length, target };
+    }
+
+    if (type === 'margin') {
+        if (!profile.margins) return { status: 'manual', violations: [], checkedCount: 0 };
+        const targets = (rule.value && typeof rule.value === 'object')
+            ? rule.value
+            : { top: rule.value, bottom: rule.value, left: rule.value, right: rule.value };
+        const violations = [];
+        ['top', 'bottom', 'left', 'right'].forEach(side => {
+            const t = parseFloat(targets[side]);
+            const actual = profile.margins[side];
+            if (Number.isNaN(t) || actual == null) return;
+            if (Math.abs(actual - t) > tolerance) {
+                violations.push({ side, target: t, actual: +actual.toFixed(2) });
+            }
+        });
+        return { status: violations.length ? 'fail' : 'pass', violations, checkedCount: 4, isMargin: true };
+    }
+
+    return null;
+}
+
+function _dvComputeFlatViolations(rules, formattingProfile) {
+    const flat = [];
+    if (!formattingProfile) return flat;
+    rules.forEach(r => {
+        const ev = _evaluateFormattingRule(r, formattingProfile);
+        if (ev && ev.status === 'fail' && !ev.isMargin) {
+            ev.violations.forEach(v => {
+                flat.push({
+                    ruleName: r.name, type: r.type, target: ev.target, unit: ev.unit,
+                    actual: v.actual, index: v.index, page: v.page, snippet: v.snippet,
+                    y: v.y, height: v.height,
+                });
+            });
+        }
+    });
+    return flat;
+}
+
+/* ══════════════════════════════════════════
+   REDLINE / AUTO-FIX FILE GENERATION
+══════════════════════════════════════════ */
+
+function _dvBaseName(name) {
+    return (name || 'document').replace(/\.[^/.]+$/, '');
+}
+
+function _dvTriggerDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+function _dvWrapText(text, font, size, maxWidth) {
+    const words = text.split(' ');
+    const lines = [];
+    let line = '';
+    words.forEach(word => {
+        const test = line ? line + ' ' + word : word;
+        if (font.widthOfTextAtSize(test, size) > maxWidth && line) {
+            lines.push(line);
+            line = word;
+        } else {
+            line = test;
+        }
+    });
+    if (line) lines.push(line);
+    return lines;
+}
+
+/* ---------- DOCX: redlined copy (highlight + inline red note) ---------- */
+function _dvBuildNoteParagraph(xmlDoc, text) {
+    const p = xmlDoc.createElementNS(_WORD_NS, 'w:p');
+    const r = xmlDoc.createElementNS(_WORD_NS, 'w:r');
+    const rPr = xmlDoc.createElementNS(_WORD_NS, 'w:rPr');
+    const color = xmlDoc.createElementNS(_WORD_NS, 'w:color');
+    color.setAttributeNS(_WORD_NS, 'w:val', 'FF0000');
+    const bold = xmlDoc.createElementNS(_WORD_NS, 'w:b');
+    const italic = xmlDoc.createElementNS(_WORD_NS, 'w:i');
+    rPr.appendChild(color); rPr.appendChild(bold); rPr.appendChild(italic);
+    r.appendChild(rPr);
+    const t = xmlDoc.createElementNS(_WORD_NS, 'w:t');
+    t.setAttribute('xml:space', 'preserve');
+    t.textContent = text;
+    r.appendChild(t);
+    p.appendChild(r);
+    return p;
+}
+
+function _dvApplyHighlight(xmlDoc, pEl) {
+    let pPrList = pEl.getElementsByTagNameNS(_WORD_NS, 'pPr');
+    let pPr;
+    if (pPrList.length) {
+        pPr = pPrList[0];
+    } else {
+        pPr = xmlDoc.createElementNS(_WORD_NS, 'w:pPr');
+        pEl.insertBefore(pPr, pEl.firstChild);
+    }
+    Array.from(pPr.getElementsByTagNameNS(_WORD_NS, 'shd')).forEach(s => pPr.removeChild(s));
+    const shd = xmlDoc.createElementNS(_WORD_NS, 'w:shd');
+    shd.setAttributeNS(_WORD_NS, 'w:val', 'clear');
+    shd.setAttributeNS(_WORD_NS, 'w:color', 'auto');
+    shd.setAttributeNS(_WORD_NS, 'w:fill', 'FFF3B0');
+    pPr.appendChild(shd);
+}
+
+async function _dvGenerateRedlinedDocx(file, violationsByParagraph) {
+    return new Promise((resolve, reject) => {
+        _validatorDeps.ensureJSZip(async () => {
+            if (!window.JSZip) { reject(new Error('JSZip unavailable')); return; }
+            try {
+                const arrayBuffer = await _resolveArrayBuffer(file);
+                const zip = await JSZip.loadAsync(arrayBuffer);
+                const xmlFile = zip.file('word/document.xml');
+                if (!xmlFile) { reject(new Error('Not a valid DOCX')); return; }
+                const xmlStr = await xmlFile.async('string');
+                const parser = new DOMParser();
+                const xmlDoc = parser.parseFromString(xmlStr, 'application/xml');
+                const pEls = Array.from(xmlDoc.getElementsByTagNameNS(_WORD_NS, 'p'));
+
+                violationsByParagraph.forEach((notes, idx) => {
+                    const pEl = pEls[idx];
+                    if (!pEl) return;
+                    _dvApplyHighlight(xmlDoc, pEl);
+                    notes.forEach(noteText => {
+                        const noteP = _dvBuildNoteParagraph(xmlDoc, '⚠ ' + noteText);
+                        pEl.parentNode.insertBefore(noteP, pEl.nextSibling);
+                    });
+                });
+
+                const serializer = new XMLSerializer();
+                const newXmlStr = serializer.serializeToString(xmlDoc);
+                zip.file('word/document.xml', newXmlStr);
+                const blob = await zip.generateAsync({ type: 'blob' });
+                resolve(blob);
+            } catch (e) { reject(e); }
+        });
+    });
+}
+
+/* ---------- DOCX: auto-fixed copy (rewrites pPr/sectPr to target values) ---------- */
+async function _dvGenerateFixedDocxOriginal(file, rules, formattingProfile) {
+    return new Promise((resolve, reject) => {
+        _validatorDeps.ensureJSZip(async () => {
+            if (!window.JSZip) { reject(new Error('JSZip unavailable')); return; }
+            try {
+                const arrayBuffer = await _resolveArrayBuffer(file);
+                const zip = await JSZip.loadAsync(arrayBuffer);
+                const xmlFile = zip.file('word/document.xml');
+                if (!xmlFile) { reject(new Error('Not a valid DOCX')); return; }
+                const xmlStr = await xmlFile.async('string');
+                const parser = new DOMParser();
+                const xmlDoc = parser.parseFromString(xmlStr, 'application/xml');
+                const pEls = Array.from(xmlDoc.getElementsByTagNameNS(_WORD_NS, 'p'));
+                const profileByIndex = new Map((formattingProfile.paragraphs || []).map(p => [p.index, p]));
+
+                const structuralRules = rules.filter(r => ['spacing', 'indentation', 'alignment'].includes((r.type || '').toLowerCase()));
+
+                structuralRules.forEach(rule => {
+                    const type = rule.type.toLowerCase();
+                    profileByIndex.forEach((_pData, idx) => {
+                        const pEl = pEls[idx];
+                        if (!pEl) return;
+                        let pPrList = pEl.getElementsByTagNameNS(_WORD_NS, 'pPr');
+                        let pPr = pPrList.length ? pPrList[0] : null;
+                        if (!pPr) {
+                            pPr = xmlDoc.createElementNS(_WORD_NS, 'w:pPr');
+                            pEl.insertBefore(pPr, pEl.firstChild);
+                        }
+                        if (type === 'spacing') {
+                            const target = parseFloat(rule.value);
+                            if (Number.isNaN(target)) return;
+                            Array.from(pPr.getElementsByTagNameNS(_WORD_NS, 'spacing')).forEach(s => pPr.removeChild(s));
+                            const sp = xmlDoc.createElementNS(_WORD_NS, 'w:spacing');
+                            sp.setAttributeNS(_WORD_NS, 'w:line', String(Math.round(target * 240)));
+                            sp.setAttributeNS(_WORD_NS, 'w:lineRule', 'auto');
+                            pPr.appendChild(sp);
+                        } else if (type === 'indentation') {
+                            const target = parseFloat(rule.value);
+                            if (Number.isNaN(target)) return;
+                            Array.from(pPr.getElementsByTagNameNS(_WORD_NS, 'ind')).forEach(s => pPr.removeChild(s));
+                            const ind = xmlDoc.createElementNS(_WORD_NS, 'w:ind');
+                            ind.setAttributeNS(_WORD_NS, 'w:firstLine', String(Math.round(target * _TWIPS_PER_INCH)));
+                            pPr.appendChild(ind);
+                        } else if (type === 'alignment') {
+                            const target = _alignNormalize(rule.value);
+                            if (!target) return;
+                            const jcVal = target === 'justified' ? 'both' : target;
+                            Array.from(pPr.getElementsByTagNameNS(_WORD_NS, 'jc')).forEach(s => pPr.removeChild(s));
+                            const jc = xmlDoc.createElementNS(_WORD_NS, 'w:jc');
+                            jc.setAttributeNS(_WORD_NS, 'w:val', jcVal);
+                            pPr.appendChild(jc);
+                        }
+                    });
+                });
+
+                const marginRule = rules.find(r => (r.type || '').toLowerCase() === 'margin');
+                if (marginRule) {
+                    const sectPrs = xmlDoc.getElementsByTagNameNS(_WORD_NS, 'sectPr');
+                    if (sectPrs.length) {
+                        const sectPr = sectPrs[sectPrs.length - 1];
+                        let pgMarEls = sectPr.getElementsByTagNameNS(_WORD_NS, 'pgMar');
+                        let pgMar = pgMarEls.length ? pgMarEls[0] : null;
+                        if (!pgMar) {
+                            pgMar = xmlDoc.createElementNS(_WORD_NS, 'w:pgMar');
+                            sectPr.appendChild(pgMar);
+                        }
+                        const targets = (marginRule.value && typeof marginRule.value === 'object')
+                            ? marginRule.value
+                            : { top: marginRule.value, bottom: marginRule.value, left: marginRule.value, right: marginRule.value };
+                        ['top', 'bottom', 'left', 'right'].forEach(side => {
+                            const t = parseFloat(targets[side]);
+                            if (Number.isNaN(t)) return;
+                            pgMar.setAttributeNS(_WORD_NS, 'w:' + side, String(Math.round(t * _TWIPS_PER_INCH)));
+                        });
+                    }
+                }
+
+                const serializer = new XMLSerializer();
+                const newXmlStr = serializer.serializeToString(xmlDoc);
+                zip.file('word/document.xml', newXmlStr);
+                const blob = await zip.generateAsync({ type: 'blob' });
+                resolve(blob);
+            } catch (e) { reject(e); }
+        });
+    });
+}
+
+/* ---------- PDF: redlined copy (highlight overlay + numbered legend page) ---------- */
+async function _dvGenerateRedlinedPdf(file, violations) {
+    return new Promise((resolve, reject) => {
+        _validatorDeps.ensurePdfLib(async () => {
+            if (!window.PDFLib) { reject(new Error('pdf-lib unavailable')); return; }
+            try {
+                const { PDFDocument, rgb, StandardFonts } = window.PDFLib;
+                const arrayBuffer = await _resolveArrayBuffer(file);
+                const pdfDoc = await PDFDocument.load(arrayBuffer);
+                const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+                const regularFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+                const pages = pdfDoc.getPages();
+
+                let counter = 0;
+                const legend = [];
+                violations.forEach(v => {
+                    if (!v.page || v.y == null) return;
+                    const page = pages[v.page - 1];
+                    if (!page) return;
+                    counter++;
+                    const h = (v.height || 10) * 1.3;
+                    page.drawRectangle({
+                        x: 40, y: v.y - h * 0.25, width: page.getWidth() - 80, height: h,
+                        color: rgb(1, 0.93, 0.55), opacity: 0.45,
+                    });
+                    page.drawText(String(counter), {
+                        x: 12, y: v.y, size: 9, font: boldFont, color: rgb(0.85, 0.1, 0.1),
+                    });
+                    legend.push(`${counter}. p.${v.page} — ${v.ruleName}: expected ${v.target}${v.unit ? ' ' + v.unit : ''}, found ${v.actual}. "${v.snippet}"`);
+                });
+
+                if (legend.length) {
+                    let summaryPage = pdfDoc.addPage();
+                    const { width, height } = summaryPage.getSize();
+                    let y = height - 50;
+                    summaryPage.drawText('Formatting Issues — Summary', { x: 50, y, size: 14, font: boldFont, color: rgb(0.1, 0.1, 0.1) });
+                    y -= 26;
+                    legend.forEach(line => {
+                        const wrapped = _dvWrapText(line, regularFont, 10, width - 100);
+                        wrapped.forEach(w => {
+                            if (y < 40) {
+                                summaryPage = pdfDoc.addPage();
+                                y = height - 50;
+                            }
+                            summaryPage.drawText(w, { x: 50, y, size: 10, font: regularFont, color: rgb(0.5, 0, 0) });
+                            y -= 14;
+                        });
+                        y -= 4;
+                    });
+                }
+
+                const bytes = await pdfDoc.save();
+                resolve(new Blob([bytes], { type: 'application/pdf' }));
+            } catch (e) { reject(e); }
+        });
+    });
+}
+
+/* ---------- PDF: auto-fixed copy (re-typeset from extracted text — see disclaimer) ---------- */
+function _dvDrawLine(page, font, words, x0, y, size, usableWidth, indent, align, isLastLine, color) {
+    const lineText = words.join(' ');
+    const naturalWidth = font.widthOfTextAtSize(lineText, size);
+    const avail = usableWidth - indent;
+
+    if (align === 'center') {
+        const offset = Math.max(0, (avail - naturalWidth) / 2);
+        page.drawText(lineText, { x: x0 + indent + offset, y, size, font, color });
+    } else if (align === 'right') {
+        const offset = Math.max(0, avail - naturalWidth);
+        page.drawText(lineText, { x: x0 + indent + offset, y, size, font, color });
+    } else if (align === 'justified' && !isLastLine && words.length > 1) {
+        const spaceWidth = font.widthOfTextAtSize(' ', size);
+        const wordsWidth = words.reduce((sum, w) => sum + font.widthOfTextAtSize(w, size), 0);
+        const gaps = words.length - 1;
+        const extra = Math.max(0, avail - wordsWidth - spaceWidth * gaps);
+        const gapWidth = spaceWidth + extra / gaps;
+        let x = x0 + indent;
+        words.forEach(w => {
+            page.drawText(w, { x, y, size, font, color });
+            x += font.widthOfTextAtSize(w, size) + gapWidth;
+        });
+    } else {
+        page.drawText(lineText, { x: x0 + indent, y, size, font, color });
+    }
+}
+
+async function _dvGenerateFixedPdfOriginal(file, rules, formattingProfile) {
+    return new Promise((resolve, reject) => {
+        _validatorDeps.ensurePdfLib(async () => {
+            if (!window.PDFLib) { reject(new Error('pdf-lib unavailable')); return; }
+            try {
+                const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
+
+                const spacingRule = rules.find(r => (r.type || '').toLowerCase() === 'spacing');
+                const indentRule = rules.find(r => (r.type || '').toLowerCase() === 'indentation');
+                const alignRule = rules.find(r => (r.type || '').toLowerCase() === 'alignment');
+                const marginRule = rules.find(r => (r.type || '').toLowerCase() === 'margin');
+
+                const lineSpacingMult = spacingRule ? parseFloat(spacingRule.value) || 1.5 : 1.5;
+                const firstLineIndentIn = indentRule ? parseFloat(indentRule.value) || 0.5 : 0.5;
+                const alignment = alignRule ? (_alignNormalize(alignRule.value) || 'left') : 'left';
+                const marginTargets = marginRule
+                    ? ((marginRule.value && typeof marginRule.value === 'object') ? marginRule.value : { top: marginRule.value, bottom: marginRule.value, left: marginRule.value, right: marginRule.value })
+                    : { top: 1, bottom: 1, left: 1, right: 1 };
+
+                const fontSizePt = 12;
+                const pageWidthPt = 8.5 * _POINTS_PER_INCH;
+                const pageHeightPt = 11 * _POINTS_PER_INCH;
+                const marginLeftPt = (parseFloat(marginTargets.left) || 1) * _POINTS_PER_INCH;
+                const marginRightPt = (parseFloat(marginTargets.right) || 1) * _POINTS_PER_INCH;
+                const marginTopPt = (parseFloat(marginTargets.top) || 1) * _POINTS_PER_INCH;
+                const marginBottomPt = (parseFloat(marginTargets.bottom) || 1) * _POINTS_PER_INCH;
+                const usableWidth = pageWidthPt - marginLeftPt - marginRightPt;
+                const lineHeightPt = fontSizePt * lineSpacingMult;
+
+                const pdfDoc = await PDFDocument.create();
+                const font = await pdfDoc.embedFont(StandardFonts.TimesRoman);
+                const black = rgb(0, 0, 0);
+                const gray = rgb(0.5, 0.5, 0.5);
+
+                let page = pdfDoc.addPage([pageWidthPt, pageHeightPt]);
+                let y = pageHeightPt - marginTopPt;
+
+                const disclaimerLines = _dvWrapText(
+                    'Auto-generated, re-typeset copy for formatting reference only. Original layout, images, tables, and fonts are not preserved — use this to check spacing, margins, indentation, and alignment only.',
+                    font, 8, usableWidth
+                );
+                disclaimerLines.forEach(l => {
+                    page.drawText(l, { x: marginLeftPt, y, size: 8, font, color: gray });
+                    y -= 10;
+                });
+                y -= 10;
+
+                const sourceLines = (formattingProfile.paragraphs || []).map(p => p.text || p.snippet);
+
+                sourceLines.forEach(paraText => {
+                    const words = (paraText || '').split(/\s+/).filter(Boolean);
+                    if (!words.length) return;
+
+                    const rawLines = [];
+                    let cur = [];
+                    let firstLineFlag = true;
+                    words.forEach(word => {
+                        const indent = firstLineFlag ? firstLineIndentIn * _POINTS_PER_INCH : 0;
+                        const testWords = [...cur, word];
+                        const testWidth = font.widthOfTextAtSize(testWords.join(' '), fontSizePt);
+                        if (testWidth > usableWidth - indent && cur.length) {
+                            rawLines.push({ words: cur, indent, isFirst: firstLineFlag });
+                            firstLineFlag = false;
+                            cur = [word];
+                        } else {
+                            cur = testWords;
+                        }
+                    });
+                    if (cur.length) rawLines.push({ words: cur, indent: firstLineFlag ? firstLineIndentIn * _POINTS_PER_INCH : 0, isFirst: firstLineFlag });
+
+                    rawLines.forEach((ln, li) => {
+                        if (y < marginBottomPt + lineHeightPt) {
+                            page = pdfDoc.addPage([pageWidthPt, pageHeightPt]);
+                            y = pageHeightPt - marginTopPt;
+                        }
+                        const isLastLine = li === rawLines.length - 1;
+                        _dvDrawLine(page, font, ln.words, marginLeftPt, y, fontSizePt, usableWidth, ln.indent, alignment, isLastLine, black);
+                        y -= lineHeightPt;
+                    });
+                    y -= lineHeightPt * 0.4;
+                });
+
+                const bytes = await pdfDoc.save();
+                resolve(new Blob([bytes], { type: 'application/pdf' }));
+            } catch (e) { reject(e); }
+        });
+    });
+}
+
+/* ══════════════════════════════════════════
+   SCORING ENGINE
+══════════════════════════════════════════ */
+
+function _scoreDocument(text, pages) {
+    const lower = text.toLowerCase();
+    const wordCount = text.split(/\s+/).filter(Boolean).length;
+
+    let thesisScore = 0;
+    let invalidScore = 0;
+    const thesisHits = [];
+    const invalidHits = [];
+
+    _THESIS_SIGNALS.structural.forEach(phrase => {
+        if (lower.includes(phrase)) { thesisScore += 3; thesisHits.push({ phrase, weight: 3 }); }
+    });
+    _THESIS_SIGNALS.academic.forEach(phrase => {
+        if (lower.includes(phrase)) { thesisScore += 2; thesisHits.push({ phrase, weight: 2 }); }
+    });
+    _THESIS_SIGNALS.weak.forEach(phrase => {
+        if (lower.includes(phrase)) { thesisScore += 1; thesisHits.push({ phrase, weight: 1 }); }
+    });
+
+    _INVALID_SIGNALS.definite.forEach(phrase => {
+        if (lower.includes(phrase)) { invalidScore += 5; invalidHits.push({ phrase, weight: 5 }); }
+    });
+    _INVALID_SIGNALS.likely.forEach(phrase => {
+        if (lower.includes(phrase)) { invalidScore += 3; invalidHits.push({ phrase, weight: 3 }); }
+    });
+
+    const wordCountOk = wordCount >= 500;
+    if (!wordCountOk) invalidScore += 10;
+    if (pages === 1) invalidScore += 5;
+
+    let docType = 'unknown';
+    if (invalidScore >= 8 && invalidScore > thesisScore) {
+        const lowerHits = invalidHits.map(h => h.phrase);
+        if (lowerHits.some(p => ['official receipt', 'payment receipt', 'gcash ref', 'total amount', 'txn-', 'or number'].includes(p))) {
+            docType = 'receipt';
+        } else if (lowerHits.some(p => ['certificate of', 'this is to certify that', 'barangay clearance', 'birth certificate'].includes(p))) {
+            docType = 'certificate';
+        } else if (lowerHits.some(p => ['dear sir', "dear ma'am", 'to whom it may concern', 'sincerely yours', 'respectfully yours'].includes(p))) {
+            docType = 'letter';
+        } else {
+            docType = 'unknown';
+        }
+    } else if (thesisScore >= 6) {
+        const capstoneKeywords = ['source code', 'system design', 'user manual', 'entity relationship', 'use case', 'database design', 'proposed system'];
+        docType = capstoneKeywords.some(k => lower.includes(k)) ? 'capstone' : 'thesis';
+    } else if (thesisScore > 0 && thesisScore > invalidScore) {
+        docType = 'thesis';
+    }
+
+    const total = thesisScore + invalidScore;
+    const winningScore = Math.max(thesisScore, invalidScore);
+    const confidence = total === 0 ? 0 : Math.round((winningScore / total) * 100);
+    const valid = ['thesis', 'capstone'].includes(docType);
+
+    return { valid, docType, confidence, thesisScore, invalidScore, wordCount, pages, thesisHits: thesisHits.slice(0, 8), invalidHits: invalidHits.slice(0, 8), wordCountOk };
+}
+
+/* ══════════════════════════════════════════
+   MAIN VALIDATOR API
+══════════════════════════════════════════ */
+
+window.validateThesisFile = async function (file) {
+    if (!file) {
+        return { valid: false, docType: 'unknown', confidence: 0, error: 'No file provided.' };
+    }
+
+    const fileName = (typeof file.name === 'string' ? file.name : '') || '';
+    const ext = fileName.split('.').pop().toLowerCase();
+
+    if (!['pdf', 'doc', 'docx'].includes(ext)) {
+        return { valid: false, docType: 'unknown', confidence: 100, error: `Unsupported file type: .${ext}` };
+    }
+
+    let extracted;
+    try {
+        extracted = await _extractFileText(file);
+    } catch (e) {
+        return { valid: false, docType: 'unreadable', confidence: 0, error: 'Could not read file: ' + e.message };
+    }
+
+    if (extracted.unsupported) {
+        return {
+            valid: null,
+            docType: 'unknown',
+            confidence: 0,
+            wordCount: 0,
+            pages: null,
+            error: '.doc (legacy Word) cannot be validated client-side. Manual review recommended.',
+            warning: true,
+        };
+    }
+
+    const textLength = (extracted.text || '').trim().length;
+    if (textLength < 50) {
+        return {
+            valid: false,
+            docType: 'unreadable',
+            confidence: 90,
+            wordCount: 0,
+            pages: extracted.pages,
+            error: 'File appears to be an image-only or scanned PDF with no extractable text.',
+            thesisScore: 0,
+            invalidScore: 0,
+            thesisHits: [],
+            invalidHits: [],
+        };
+    }
+
+    const result = _scoreDocument(extracted.text, extracted.pages);
+    return { ...result, error: null };
+};
+
+/* ══════════════════════════════════════════
+   PICKER STEP — choose file + which template/paper
+   to check it against, before running anything.
+══════════════════════════════════════════ */
+
+// state used by the download buttons (after a check has run)
+let _dvLastFile = null;
+let _dvLastFormattingProfile = null;
+let _dvLastRules = [];
+let _dvLastFlatViolations = [];
+
+// state used by the picker step (before a check has run)
+let _dvPendingFile = null;
+let _dvPendingActionLabel = null;
+let _dvPendingCallback = null;
+let _dvPendingMeta = null;
+let _dvPendingAllowFileChange = true; // true on the student page, false on admin (file is fixed to the submission)
+let _dvActiveTemplates = [];
+let _dvSelectedTemplateId = null;
+
+function _createValidationModal() {
+    const modal = document.createElement('div');
+    modal.id = 'docValidationModal';
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `
+        <div class="modal-box" style="max-width:1100px;">
+            <div class="modal-header">
+                <h2>Document Type & Format Check</h2>
+                <button class="modal-close" onclick="window._dvCloseModal('docValidationModal')">✕</button>
+            </div>
+            <div class="modal-body" id="docValidationBody">
+                <div class="fp-skeleton">
+                    <div class="fp-skeleton-spinner"></div>
+                    <div class="fp-skeleton-msg">Loading…</div>
+                </div>
+            </div>
+            <div class="modal-footer" id="docValidationFooter">
+                <button class="btn-modal-close" onclick="window._dvCloseModal('docValidationModal')">Cancel</button>
+            </div>
+        </div>`;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', e => { if (e.target === modal) _dvCloseModal('docValidationModal'); });
+    return modal;
+}
+
+// Renders the "pick a file (if allowed) + pick a template" step.
+function _dvRenderPickerStep() {
+    const body = document.getElementById('docValidationBody');
+    const footer = document.getElementById('docValidationFooter');
+
+    _dvActiveTemplates = _getActiveFormatTemplates();
+    if ((_dvSelectedTemplateId == null || _dvSelectedTemplateId === '') && _dvActiveTemplates.length) {
+        _dvSelectedTemplateId = _dvActiveTemplates[0].id;
+    }
+
+    const fileSectionHtml = _dvPendingAllowFileChange
+        ? `
+        <div class="fp-section-title">1. Upload your thesis file</div>
+        <div class="dv-file-drop" id="dvFileDrop">
+            <div class="file-drop-content">
+                <span class="file-icon">📂</span>
+                <p>Drag & drop your file here, or <label for="dvFileInput" class="file-link">browse</label></p>
+                <p class="file-hint">Accepted: PDF, DOCX (Max 20MB)</p>
+            </div>
+            <input type="file" id="dvFileInput" accept=".pdf,.docx" hidden />
+        </div>
+        ${_dvPendingFile ? `
+        <div class="file-preview" style="display:flex;">
+            <span>📎</span>
+            <span>${_escHtml(_dvPendingFile.name)} (${(_dvPendingFile.size / 1024 / 1024).toFixed(2)} MB)</span>
+            <button onclick="window._dvClearPendingFile()" style="margin-left:auto;background:none;border:none;cursor:pointer;font-size:16px;color:#888">✕</button>
+        </div>` : ''}
+        <div id="dvUploadError"></div>`
+        : `
+        <div class="fp-section-title">File</div>
+        <div class="file-preview" style="display:flex;">
+            <span>📎</span>
+            <span>${_escHtml(_dvPendingFile?.name || '—')}</span>
+        </div>`;
+
+    const templatePickerHtml = _dvActiveTemplates.length
+        ? `<select id="dvTemplateSelect" class="dv-select">
+                ${_dvActiveTemplates.map(t =>
+            `<option value="${_escHtml(String(t.id))}" ${String(t.id) === String(_dvSelectedTemplateId) ? 'selected' : ''}>${_escHtml(t.name)}${t.active ? "" : " (inactive)"} — ${_escHtml(t.type)}</option>`
+        ).join('')}
+           </select>
+           <div class="dv-template-desc" id="dvTemplateDesc"></div>`
+        : `<div class="fp-notice warning">⚠️ No active format templates are available yet. Ask an admin to publish one in Format Templates before running a check.</div>`;
+
+    body.innerHTML = `
+        ${fileSectionHtml}
+        <div class="dv-template-picker" style="margin-top:18px;">
+            <div class="fp-section-title">2. Choose which paper / format template to check against</div>
+            ${templatePickerHtml}
+        </div>
+    `;
+
+    const canRun = !!_dvPendingFile && _dvActiveTemplates.length > 0;
+    footer.innerHTML = `
+        <button class="btn-modal-close" onclick="window._dvCloseModal('docValidationModal')">Cancel</button>
+        <button class="btn-modal-submit" id="dvRunBtn" ${canRun ? '' : 'disabled style="opacity:0.5;cursor:not-allowed;"'} onclick="window._dvRunPendingCheck()">
+            Run ${_escHtml(_dvPendingActionLabel || 'Check')} →
+        </button>`;
+
+    if (_dvPendingAllowFileChange) _dvWireUploadEvents();
+
+    const sel = document.getElementById('dvTemplateSelect');
+    const descEl = document.getElementById('dvTemplateDesc');
+    const updateDesc = () => {
+        if (!sel || !descEl) return;
+        const t = _dvActiveTemplates.find(t => String(t.id) === String(sel.value));
+        descEl.textContent = t && t.description ? t.description : '';
+    };
+    if (sel) {
+        _dvSelectedTemplateId = sel.value; sel.addEventListener('change', () => { _dvSelectedTemplateId = sel.value; updateDesc(); });
+        updateDesc();
+    }
+}
+
+function _dvWireUploadEvents() {
+    const drop = document.getElementById('dvFileDrop');
+    const input = document.getElementById('dvFileInput');
+    if (!drop || !input) return;
+
+    drop.addEventListener('click', () => input.click());
+    drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('dragover'); });
+    drop.addEventListener('dragleave', () => drop.classList.remove('dragover'));
+    drop.addEventListener('drop', e => {
+        e.preventDefault();
+        drop.classList.remove('dragover');
+        const file = e.dataTransfer.files[0];
+        if (file) window._dvHandleFileSelected(file);
+    });
+    input.addEventListener('change', () => {
+        if (input.files[0]) window._dvHandleFileSelected(input.files[0]);
+    });
+}
+
+window._dvHandleFileSelected = function (file) {
+    const errEl = document.getElementById('dvUploadError');
+    const ext = file.name.slice(file.name.lastIndexOf('.') + 1).toLowerCase();
+
+    if (!['pdf', 'docx'].includes(ext)) {
+        if (errEl) errEl.innerHTML = `<div class="fp-notice warning">❌ Only PDF or DOCX files are allowed.</div>`;
+        return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+        if (errEl) errEl.innerHTML = `<div class="fp-notice warning">❌ File exceeds 20MB limit.</div>`;
+        return;
+    }
+
+    _dvPendingFile = file;
+    _dvRenderPickerStep();
+};
+
+window._dvClearPendingFile = function () {
+    _dvPendingFile = null;
+    _dvRenderPickerStep();
+};
+
+// Called by the "Run …" button once a file + template are chosen.
+window._dvRunPendingCheck = async function () {
+    if (!_dvPendingFile) return;
+    const file = _dvPendingFile;
+    const actionLabel = _dvPendingActionLabel;
+    const onValidCallback = _dvPendingCallback;
+    const meta = _dvPendingMeta || {};
+    const templateId = _dvSelectedTemplateId;
+    await _dvRunFileCheck(file, actionLabel, onValidCallback, meta, templateId);
+};
+
+// Lets the user go back from the result screen to re-pick file/template.
+window._dvBackToPicker = function () {
+    _dvRenderPickerStep();
+};
+
+function _dvRenderRuleRow(rule, formattingProfile) {
+    const evalResult = _evaluateFormattingRule(rule, formattingProfile);
+    if (!evalResult) {
+        return `
+            <div class="dv-rule-row dv-rule-manual">
+                <div class="dv-rule-top"><span>⚠️</span><span class="dv-rule-name">${_escHtml(rule.name)}</span><span class="badge badge-neutral dv-rule-type">${_escHtml(rule.type)}</span></div>
+                ${rule.detail ? `<div class="dv-rule-detail">${_escHtml(rule.detail)}</div>` : ''}
+                <div class="dv-rule-status">Not automatically checkable — please verify manually.</div>
+            </div>`;
+    }
+
+    if (evalResult.status === 'manual') {
+        return `
+            <div class="dv-rule-row dv-rule-manual">
+                <div class="dv-rule-top"><span>⚠️</span><span class="dv-rule-name">${_escHtml(rule.name)}</span><span class="badge badge-neutral dv-rule-type">${_escHtml(rule.type)}</span></div>
+                ${rule.detail ? `<div class="dv-rule-detail">${_escHtml(rule.detail)}</div>` : ''}
+                <div class="dv-rule-status">Could not be measured automatically from this file — please verify manually.</div>
+            </div>`;
+    }
+
+    const icon = evalResult.status === 'pass' ? '✅' : '❌';
+    const cls = evalResult.status === 'pass' ? 'dv-rule-found' : 'dv-rule-fail';
+    const estimateNote = formattingProfile.estimated ? ` <span class="dv-rule-estimate">(estimated from PDF layout — verify manually)</span>` : '';
+
+    let violationHtml = '';
+    if (evalResult.status === 'fail') {
+        if (evalResult.isMargin) {
+            violationHtml = `<div class="dv-violations">${evalResult.violations.map(v =>
+                `<div class="dv-violation-item">${_escHtml(v.side)} margin: expected ~${v.target}", found ~${v.actual}"</div>`
+            ).join('')}</div>`;
+        } else {
+            const shown = evalResult.violations.slice(0, 5);
+            const extra = evalResult.violations.length - shown.length;
+            violationHtml = `<div class="dv-violations">${shown.map(v => {
+                const loc = v.page ? `p.${v.page}` : `¶${v.index + 1}`;
+                return `<div class="dv-violation-item"><span class="dv-violation-loc">${_escHtml(loc)}</span> "${_escHtml(v.snippet)}" — expected ${evalResult.target}${evalResult.unit ? ' ' + evalResult.unit : ''}, found ${v.actual}</div>`;
+            }).join('')}${extra > 0 ? `<div class="dv-violation-item dv-violation-more">+${extra} more instance${extra === 1 ? '' : 's'}</div>` : ''}</div>`;
+        }
+    }
+
+    return `
+        <div class="dv-rule-row ${cls}">
+            <div class="dv-rule-top"><span>${icon}</span><span class="dv-rule-name">${_escHtml(rule.name)}</span><span class="badge badge-neutral dv-rule-type">${_escHtml(rule.type)}</span></div>
+            ${rule.detail ? `<div class="dv-rule-detail">${_escHtml(rule.detail)}</div>` : ''}
+            <div class="dv-rule-status">
+                ${evalResult.status === 'pass'
+            ? `Checked ${evalResult.checkedCount} instance(s) — all within tolerance.`
+            : `${evalResult.violations.length} of ${evalResult.checkedCount} checked instance(s) don't match.`}${estimateNote}
+            </div>
+            ${violationHtml}
+        </div>`;
+}
+
+function _renderValidationResult(result, onProceed, actionLabel, formattingProfile, rules, rulesSource) {
+    const body = document.getElementById('docValidationBody');
+    const footer = document.getElementById('docValidationFooter');
+    const typeMeta = _DOC_TYPE_LABELS[result.docType] || _DOC_TYPE_LABELS.unknown;
+
+    const backBtn = `<button class="btn-modal-close" onclick="window._dvBackToPicker()">← Change File / Template</button>`;
+
+    if (result.warning) {
+        body.innerHTML = `
+            <div class="dv-result-header" style="border-color:#f59e0b;">
+                <span class="dv-type-icon">⚠️</span>
+                <div>
+                    <div class="dv-type-label" style="color:#fbbf24;">Legacy .doc Format</div>
+                    <div class="dv-type-sub">Cannot auto-validate — manual review needed</div>
+                </div>
+            </div>
+            <div class="fp-notice warning" style="margin-top:12px;">${_escHtml(result.error)}</div>`;
+        footer.innerHTML = `
+            ${backBtn}
+            <button class="btn-modal-close" onclick="window._dvCloseModal('docValidationModal')">Cancel</button>
+            <button class="btn-modal-submit" style="background:#f59e0b;" onclick="window._dvCloseModal('docValidationModal');${onProceed}">
+                ⚠️ Proceed Anyway
+            </button>`;
+        return;
+    }
+
+    if (result.error && !result.valid && result.docType === 'unreadable') {
+        body.innerHTML = `
+            <div class="dv-result-header" style="border-color:#ef4444;">
+                <span class="dv-type-icon">${typeMeta.icon}</span>
+                <div>
+                    <div class="dv-type-label" style="color:#f87171;">${typeMeta.label}</div>
+                    <div class="dv-type-sub">${_escHtml(result.error)}</div>
+                </div>
+            </div>
+            <div class="fp-notice warning" style="margin-top:12px;">
+                ❌ This file cannot be processed as a thesis submission.
+                Please ask the student to re-submit the correct document.
+            </div>`;
+        footer.innerHTML = `${backBtn}<button class="btn-modal-close" onclick="window._dvCloseModal('docValidationModal')">Close</button>`;
+        return;
+    }
+
+    const total = Math.max(result.thesisScore + result.invalidScore, 1);
+    const thesisPct = Math.round((result.thesisScore / total) * 100);
+    const invalidPct = 100 - thesisPct;
+
+    const thesisHitsList = result.thesisHits.length
+        ? result.thesisHits.map(h => `<span class="dv-hit dv-hit-good">${_escHtml(h.phrase)}</span>`).join('')
+        : '<span style="color:#666;font-size:12px;">None found</span>';
+    const invalidHitsList = result.invalidHits.length
+        ? result.invalidHits.map(h => `<span class="dv-hit dv-hit-bad">${_escHtml(h.phrase)}</span>`).join('')
+        : '<span style="color:#666;font-size:12px;">None found</span>';
+
+    const statusNotice = result.valid
+        ? ''
+        : `<div class="fp-notice warning">
+               ❌ <strong>This does not appear to be a thesis or research paper.</strong><br>
+               Detected as: <strong>${typeMeta.label}</strong>. Please ask the student to submit the correct file.
+           </div>`;
+
+    // ── formatting checklist + download buttons ──
+    let formattingSectionHtml;
+    if (formattingProfile) {
+        const ruleRowsHtml = rules.map((r,index) => _dvRenderRuleRow(r, formattingProfile).replace('<div class=', '<div data-dv-checklist-rule="'+index+'" class=')).join('');
+        let passCount = 0, failCount = 0, manualCount = 0;
+        rules.forEach(r => { const ev = _evaluateFormattingRule(r, formattingProfile); if (ev && ev.status === 'pass') passCount++; else if (ev && ev.status === 'fail') failCount++; else manualCount++; });
+        formattingSectionHtml = `
+            <div class="fp-section-title" style="margin-top:14px;">Formatting Checklist — checked against: ${_escHtml(rulesSource)}</div>
+            <div class="dv-format-summary" data-dv-checklist-summary><span style="color:#4ade80;">${passCount} passed</span> · <span style="color:#f87171;">${failCount} failed rules</span> ? <span style="color:#fbbf24;">${manualCount} manual checks</span>${formattingProfile.estimated ? ' · <span style="color:#fbbf24;">estimated from PDF layout</span>' : ''}</div>
+            <div class="dv-rule-rows">${ruleRowsHtml}</div>
+            <div class="dv-download-row">
+            </div>`;
+    } else {
+        formattingSectionHtml = `
+            <div class="fp-notice warning" style="margin-top:14px;">⚠️ Formatting could not be analyzed for this file type — spacing/margin/indentation/alignment need manual review.</div>`;
+    }
+
+    body.innerHTML = `
+        <div class="dv-result-header" style="border-color:${typeMeta.color};">
+            <span class="dv-type-icon">${typeMeta.icon}</span>
+            <div style="flex:1;">
+                <div class="dv-type-label" style="color:${typeMeta.color};">${typeMeta.label}</div>
+                <div class="dv-type-sub">${result.confidence}% confidence · ${result.wordCount.toLocaleString()} words${result.pages ? ' · ' + result.pages + ' page(s)' : ''}</div>
+            </div>
+            <div class="dv-valid-badge" style="background:${result.valid ? '#0f2a1a' : '#2a0f0f'};color:${result.valid ? '#4ade80' : '#f87171'};">
+                ${result.valid ? '✓ Valid' : '✗ Invalid'}
+            </div>
+        </div>
+
+        <div class="dv-score-section">
+            <div class="dv-score-row">
+                <span class="dv-score-lbl">📄 Thesis signals</span>
+                <div class="dv-bar-wrap"><div class="dv-bar" style="width:${thesisPct}%;background:#22c55e;"></div></div>
+                <span class="dv-score-val">${result.thesisScore} pts</span>
+            </div>
+            <div class="dv-score-row">
+                <span class="dv-score-lbl">🚫 Non-thesis signals</span>
+                <div class="dv-bar-wrap"><div class="dv-bar" style="width:${invalidPct}%;background:#ef4444;"></div></div>
+                <span class="dv-score-val">${result.invalidScore} pts</span>
+            </div>
+        </div>
+
+        <div class="fp-section-title">Thesis Keywords Found</div>
+        <div class="dv-hits-wrap">${thesisHitsList}</div>
+
+        ${result.invalidHits.length > 0 ? `
+        <div class="fp-section-title" style="margin-top:10px;">Non-Thesis Keywords Found</div>
+        <div class="dv-hits-wrap">${invalidHitsList}</div>` : ''}
+
+        ${!result.wordCountOk ? `
+        <div class="fp-notice warning" style="margin-top:10px;">
+            ⚠️ Word count too low (${result.wordCount} words). A thesis typically has at least 500 words.
+        </div>` : ''}
+
+        ${formattingSectionHtml}
+
+        ${statusNotice ? `<div style="margin-top:12px;">${statusNotice}</div>` : ''}
+    `;
+
+    if (result.valid) {
+        footer.innerHTML = `
+            ${backBtn}
+            <button class="btn-modal-close" onclick="window._dvCloseModal('docValidationModal')">Cancel</button>
+            ${actionLabel === 'Format Check' ? '' : `<button class="btn-modal-submit" onclick="window._dvCloseModal('docValidationModal');${onProceed}">
+                Run ${_escHtml(actionLabel)} →
+            </button>`}`;
+    } else {
+        footer.innerHTML = `
+            ${backBtn}
+            <button class="btn-modal-close" onclick="window._dvCloseModal('docValidationModal')">Close</button>
+            <button class="btn-modal-submit" style="background:#6b7280;border-color:#6b7280;"
+                onclick="if(confirm('This file was flagged as non-thesis content. Proceed anyway?')){window._dvCloseModal('docValidationModal');${onProceed}}">
+                Override & Proceed
+            </button>`;
+    }
+}
+
+/* ══════════════════════════════════════════
+   Download button handlers
+══════════════════════════════════════════ */
+
+window._dvDownloadRedline = async function () {
+    const btn = document.getElementById('dvRedlineBtn');
+    if (!_dvLastFile || !_dvLastFormattingProfile) return;
+    const ext = (_dvLastFile.name || '').split('.').pop().toLowerCase();
+    if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
+    try {
+        let blob;
+        if (ext === 'docx') {
+            const byParagraph = new Map();
+            _dvLastFlatViolations.forEach(v => {
+                if (v.index == null) return;
+                const note = `${v.ruleName}: expected ${v.target}${v.unit ? ' ' + v.unit : ''}, found ${v.actual}`;
+                if (!byParagraph.has(v.index)) byParagraph.set(v.index, []);
+                byParagraph.get(v.index).push(note);
+            });
+            if (!byParagraph.size) { alert('No specific formatting issues to mark — nothing to redline.'); return; }
+            blob = await _dvGenerateRedlinedDocx(_dvLastFile, byParagraph);
+        } else if (ext === 'pdf') {
+            if (!_dvLastFlatViolations.length) { alert('No specific formatting issues to mark — nothing to redline.'); return; }
+            blob = await _dvGenerateRedlinedPdf(_dvLastFile, _dvLastFlatViolations);
+        } else {
+            throw new Error('Unsupported file type for redlining.');
+        }
+        _dvTriggerDownload(blob, _dvBaseName(_dvLastFile.name) + '_redlined.' + ext);
+    } catch (e) {
+        console.error('[Validator] Redline generation failed:', e);
+        alert('Could not generate the redlined copy: ' + e.message);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '📥 Download Redlined Copy (shows errors)'; }
+    }
+};
+
+window._dvDownloadFixed = async function () {
+    const btn = document.getElementById('dvFixedBtn');
+    if (!_dvLastFile || !_dvLastRules) return;
+    const ext = (_dvLastFile.name || '').split('.').pop().toLowerCase();
+    if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
+    try {
+        let blob;
+        if (ext === 'docx') {
+            if (window._dvFixApiReady) await window._dvFixApiReady;
+            blob = await _dvGenerateFixedDocx(_dvLastFile, _dvLastRules, _dvLastFormattingProfile);
+        } else if (ext === 'pdf') {
+            blob = await _dvGenerateFixedPdf(_dvLastFile, _dvLastRules, _dvLastFormattingProfile);
+        } else {
+            throw new Error('Unsupported file type for auto-fix.');
+        }
+        _dvTriggerDownload(blob, _dvBaseName(_dvLastFile.name) + '_fixed.' + ext);
+    } catch (e) {
+        console.error('[Validator] Fixed-copy generation failed:', e);
+        alert('Could not generate the auto-fixed copy: ' + e.message);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '📥 Download Auto-Fixed Copy (aligned to template)'; }
+    }
+};
+
+/* ══════════════════════════════════════════
+   PUBLIC: Show validation modal for a thesis
+   (admin side — thesis looked up by id from window.theses)
+   File is fixed to the submission; admin still picks WHICH
+   template to check it against.
+══════════════════════════════════════════ */
+
+window.openDocValidationModal = async function (thesisId, actionLabel, onValidCallback) {
+    const thesis = (window.theses ?? []).find(t => t.id === thesisId);
+    if (!thesis) return;
+
+    if (!thesis.file) {
+        window._dvRunCallback(onValidCallback);
+        return;
+    }
+
+    let modal = document.getElementById('docValidationModal');
+    if (!modal) modal = _createValidationModal();
+
+    _dvPendingFile = thesis.file;
+    _dvPendingActionLabel = actionLabel;
+    _dvPendingCallback = onValidCallback;
+    _dvPendingMeta = { student: thesis.student || '—' };
+    _dvPendingAllowFileChange = false;
+    _dvSelectedTemplateId = null;
+
+    _dvRenderPickerStep();
+    _dvOpenModal('docValidationModal');
+};
+
+/* ══════════════════════════════════════════
+   PUBLIC: Show validation modal for a raw File
+   (student/user side — no thesis record needed)
+
+   Call with `file = null` (the common case — e.g. the "Check
+   Formatting" button on Submit Thesis) to let the student upload
+   inside the modal. Either way, the student must also pick which
+   template/paper to check against before the "Run" button works.
+   Produces the exact same two downloads as the admin side:
+   redlined copy + auto-fixed copy.
+══════════════════════════════════════════ */
+
+window.openDocValidationModalForFile = async function (file, actionLabel, onValidCallback) {
+    let modal = document.getElementById('docValidationModal');
+    if (!modal) modal = _createValidationModal();
+
+    _dvPendingFile = file || null;
+    _dvPendingActionLabel = actionLabel;
+    _dvPendingCallback = onValidCallback;
+    _dvPendingMeta = {};
+    _dvPendingAllowFileChange = true;
+    _dvSelectedTemplateId = null;
+
+    _dvRenderPickerStep();
+    _dvOpenModal('docValidationModal');
+};
+
+/* ══════════════════════════════════════════
+   SHARED: run validation + formatting analysis
+   on a resolved file against a chosen template,
+   then render the result. Used by both the admin
+   and student picker steps above.
+══════════════════════════════════════════ */
+
+async function _dvRunFileCheck(fileObj, actionLabel, onValidCallback, meta, templateId) {
+    const fName = fileObj.name || '';
+    const ext = fName.split('.').pop().toLowerCase();
+    const validExts = ['pdf', 'doc', 'docx'];
+
+    let modal = document.getElementById('docValidationModal');
+    if (!modal) modal = _createValidationModal();
+
+    if (!validExts.includes(ext)) {
+        document.getElementById('docValidationBody').innerHTML = `
+            <div class="fp-notice warning">
+                ❌ Unsupported file type (.${_escHtml(ext)}). Only PDF, DOC, and DOCX are accepted.
+            </div>`;
+        document.getElementById('docValidationFooter').innerHTML = `
+            <button class="btn-modal-close" onclick="window._dvBackToPicker()">← Change File / Template</button>
+            <button class="btn-modal-close" onclick="window._dvCloseModal('docValidationModal')">Close</button>`;
+        _dvOpenModal('docValidationModal');
+        return;
+    }
+
+    const chosenTemplate = _dvActiveTemplates.find(t => String(t.id) === String(templateId));
+
+    const metaRows = [`<div><span class="fp-label">File</span><span>${_escHtml(fName || '—')}</span></div>`];
+    if (meta && meta.student) {
+        metaRows.push(`<div><span class="fp-label">Student</span><span>${_escHtml(meta.student)}</span></div>`);
+    }
+    metaRows.push(`<div><span class="fp-label">Template</span><span>${_escHtml(chosenTemplate ? chosenTemplate.name : 'Default Thesis Format')}</span></div>`);
+
+    document.getElementById('docValidationBody').innerHTML = `
+        <div class="fp-meta">${metaRows.join('')}</div>
+        <div class="fp-skeleton">
+            <div class="fp-skeleton-spinner"></div>
+            <div class="fp-skeleton-msg">Fetching and analysing document…</div>
+        </div>`;
+    document.getElementById('docValidationFooter').innerHTML =
+        `<button class="btn-modal-close" onclick="window._dvCloseModal('docValidationModal')">Cancel</button>`;
+
+    _dvOpenModal('docValidationModal');
+
+    // Runs for real File/Blob instances (student picker) AND plain {name,url}
+    // API objects (admin side) — _resolveArrayBuffer handles fetching the latter.
+    const [result, formattingProfile] = await Promise.all([
+        window.validateThesisFile(fileObj),
+        _extractFormattingProfile(fileObj).catch(e => { console.warn('[Validator] Formatting analysis failed:', e); return null; }),
+    ]);
+
+    const { rules, source: rulesSource } = _getFormatRules(templateId);
+    _dvLastFile = fileObj;
+    _dvLastFormattingProfile = formattingProfile;
+    _dvLastRules = rules;
+    window._dvFixTemplateId = templateId;
+    window._dvFixRevision = (window._dvFixRevision || 0) + 1;
+    _dvLastFlatViolations = _dvComputeFlatViolations(rules, formattingProfile);
+
+    _renderValidationResult(result, onValidCallback, actionLabel, formattingProfile, rules, rulesSource);
+    if (/\.docx$/i.test(fileObj.name || '')) {
+        if (window._dvFixApiReady) await window._dvFixApiReady;
+        if (window._dvCheckAndFixPaper) await window._dvCheckAndFixPaper();
+    }
+}
+
+window._dvRunCallback = function (callbackStr) {
+    try { eval(callbackStr); } catch (e) { console.error('[Validator] Callback error:', e); }
+};
+
+/* ══════════════════════════════════════════
+   PATCH openFormatModal & openPlagiarismModal
+══════════════════════════════════════════ */
+document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(() => {
+        const _origFormat = window.openFormatModal;
+        const _origPlag = window.openPlagiarismModal;
+
+        if (typeof _origFormat === 'function') {
+            window.openFormatModal = function (id) {
+                window.openDocValidationModal(
+                    id,
+                    'Format Check',
+                    `window._dvRunCallback.__origFormat(${id})`
+                );
+            };
+            window._dvRunCallback.__origFormat = _origFormat;
+        }
+
+        if (typeof _origPlag === 'function') {
+            window.openPlagiarismModal = function (id) {
+                window.openDocValidationModal(
+                    id,
+                    'Plagiarism Check',
+                    `window._dvRunCallback.__origPlag(${id})`
+                );
+            };
+            window._dvRunCallback.__origPlag = _origPlag;
+        }
+
+        console.log('[AIDEA Validator] Document type validation + template picker + real formatting checks + redline/auto-fix generation patched into Format & Plagiarism checks.');
+    }, 300);
+});
+
+/* ══════════════════════════════════════════
+   STYLES
+══════════════════════════════════════════ */
+(function injectDVStyles() {
+    if (document.getElementById('dv-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'dv-styles';
+    style.textContent = `
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 10000; }
+        .modal-box { background: #12152a; border-radius: 16px; width: 90%; max-height: 85vh; overflow-y: auto; color: #eee; }
+        .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 18px 22px; border-bottom: 1px solid #23263a; }
+        .modal-header h2 { font-size: 16px; }
+        .modal-close { background: none; border: none; color: #888; font-size: 18px; cursor: pointer; }
+        .modal-body { padding: 20px 22px; }
+        .modal-footer { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 22px; border-top: 1px solid #23263a; flex-wrap: wrap; }
+        .btn-modal-close { background: #1e2235; border: 1px solid #333; color: #ccc; padding: 9px 18px; border-radius: 8px; cursor: pointer; font-weight: 600; }
+        .btn-modal-submit { background: #22c55e; border: none; color: #06110a; padding: 9px 18px; border-radius: 8px; cursor: pointer; font-weight: 700; }
+
+        .fp-section-title { font-size: 12px; color: #888; margin-bottom: 6px; font-weight: 700; }
+        .fp-notice { padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-top: 8px; }
+        .fp-notice.success { background: #0f2a1a; color: #4ade80; }
+        .fp-notice.warning { background: #2a1f0f; color: #fbbf24; }
+        .fp-meta { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; font-size: 13px; }
+        .fp-label { color: #888; margin-right: 8px; }
+        .fp-skeleton { display: flex; align-items: center; gap: 12px; padding: 20px 0; }
+        .fp-skeleton-spinner { width: 22px; height: 22px; border: 3px solid #333; border-top-color: #22c55e; border-radius: 50%; animation: dv-spin 0.8s linear infinite; }
+        @keyframes dv-spin { to { transform: rotate(360deg); } }
+        .fp-skeleton-msg { font-size: 13px; color: #aaa; }
+
+        /* picker step */
+        .dv-file-drop {
+            border: 2px dashed #333; border-radius: 12px; padding: 26px;
+            text-align: center; cursor: pointer; transition: border-color .15s, background .15s;
+        }
+        .dv-file-drop:hover, .dv-file-drop.dragover { border-color: #f5c518; background: rgba(245,197,24,0.06); }
+        .dv-file-drop .file-icon { font-size: 28px; display: block; margin-bottom: 8px; }
+        .dv-file-drop p { font-size: 13px; color: #aaa; }
+        .dv-file-drop .file-link { color: #f5c518; font-weight: 700; cursor: pointer; text-decoration: underline; }
+        .dv-file-drop .file-hint { font-size: 11px; color: #666; margin-top: 4px; }
+        .file-preview {
+            background: #1a1d2e; border: 1px solid #333; border-radius: 9px;
+            padding: 10px 14px; font-size: 13px; display: flex; align-items: center; gap: 10px; margin-top: 10px;
+        }
+        .dv-template-picker { margin-bottom: 4px; }
+        .dv-select { width: 100%; padding: 9px 12px; border-radius: 8px; border: 1px solid #333; background: #1a1d2e; color: #eee; font-size: 13px; }
+        .dv-template-desc { font-size: 12px; color: #aaa; margin-top: 8px; }
+
+        /* result step */
+        .dv-result-header {
+            display: flex; align-items: center; gap: 14px;
+            padding: 14px 16px; border: 2px solid #333;
+            border-radius: 12px; background: #12152a; margin-bottom: 16px;
+        }
+        .dv-type-icon  { font-size: 32px; flex-shrink: 0; }
+        .dv-type-label { font-size: 17px; font-weight: 700; }
+        .dv-type-sub   { font-size: 12px; color: #888; margin-top: 2px; }
+        .dv-valid-badge {
+            padding: 4px 12px; border-radius: 20px;
+            font-size: 12px; font-weight: 700; white-space: nowrap; flex-shrink: 0;
+        }
+        .dv-score-section { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+        .dv-score-row  { display: flex; align-items: center; gap: 10px; }
+        .dv-score-lbl  { font-size: 12px; color: #aaa; min-width: 150px; flex-shrink: 0; }
+        .dv-bar-wrap   { flex: 1; height: 8px; background: #1e2235; border-radius: 4px; overflow: hidden; }
+        .dv-bar        { height: 100%; border-radius: 4px; transition: width 0.5s ease; min-width: 2px; }
+        .dv-score-val  { font-size: 12px; color: #888; min-width: 44px; text-align: right; }
+        .dv-hits-wrap  { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+        .dv-hit        { padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 500; }
+        .dv-hit-good   { background: #0f2a1a; color: #4ade80; border: 1px solid #22c55e33; }
+        .dv-hit-bad    { background: #2a0f0f; color: #f87171; border: 1px solid #ef444433; }
+
+        .dv-format-summary { font-size: 12px; margin-bottom: 10px; }
+        .dv-rule-rows { display: flex; flex-direction: column; gap: 6px; }
+        .dv-rule-row { border: 1px solid #23263a; border-radius: 8px; padding: 8px 12px; }
+        .dv-rule-found { border-color: #22c55e44; background: rgba(34,197,94,0.08); }
+        .dv-rule-fail { border-color: #ef444444; background: rgba(239,68,68,0.08); }
+        .dv-rule-manual { border-color: #f59e0b44; background: rgba(245,158,11,0.08); }
+        .dv-rule-top { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13px; }
+        .dv-rule-name { flex: 1; }
+        .dv-rule-type { font-size: 10px; padding: 1px 6px; }
+        .dv-rule-detail { font-size: 12px; color: #aaa; margin-top: 4px; }
+        .dv-rule-status { font-size: 11px; color: #888; margin-top: 3px; font-style: italic; }
+        .dv-rule-estimate { color: #fbbf24; font-style: normal; }
+
+        .dv-violations { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+        .dv-violation-item { font-size: 11.5px; color: #f8b4b4; background: rgba(239,68,68,0.08); border-radius: 6px; padding: 5px 9px; }
+        .dv-violation-loc { font-weight: 700; color: #fca5a5; margin-right: 6px; }
+        .dv-violation-more { color: #999; font-style: italic; }
+
+        .dv-download-row { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+        .dv-download-row .btn-modal-close { background: #1a2e1e; border-color: #22c55e55; color: #86efac; }
+        .dv-download-row .btn-modal-close:disabled { opacity: 0.5; cursor: not-allowed; }
+    `;
+    document.head.appendChild(style);
+})();
+
+/* CHECKLIST_VALIDATOR_PATCH: checklist-based defaults, PDF results advisory */
+const _CHECKLIST_MEASURABLE = [
+    { id: 'checklist-spacing', name: 'Line Spacing', type: 'spacing', value: 2, detail: 'The manuscript is in double line spacing.' },
+    { id: 'checklist-margin', name: 'Page Margins', type: 'margin', value: { top: 1, bottom: 1, left: 1.5, right: 1 }, detail: 'Left 1.5 inches; right, top and bottom 1 inch.' }
+];
+
+_DEFAULT_FORMAT_RULES.length = 0;
+_CHECKLIST_MEASURABLE.forEach(function (r) { _DEFAULT_FORMAT_RULES.push(r); });
+
+function _withMeasurableRules(rules) {
+    var has = rules.some(function (r) {
+        var ty = String((r && r.type) || '').toLowerCase();
+        return ty === 'spacing' || ty === 'margin';
+    });
+    return has ? rules : _CHECKLIST_MEASURABLE.concat(rules);
+}
+
+function _getFormatRules(templateId) {
+    if (String(templateId) === '__checklist__') return { rules: _DEFAULT_FORMAT_RULES, source: 'Thesis Format and Assessment Checklist', template: _CHECKLIST_PSEUDO };
+    try {
+        const templates = JSON.parse(localStorage.getItem(_TEMPLATE_STORAGE_KEY) || '[]');
+        if (templateId != null && templateId !== '') {
+            const chosen = templates.find(t => t && String(t.id) === String(templateId));
+            if (chosen) {
+                const rules = Array.isArray(chosen.rules) ? chosen.rules : [];
+                return { rules: rules, source: chosen.name || 'Selected Template', template: chosen };
+            }
+        }
+        const active = templates.find(t => t && t.active && Array.isArray(t.rules) && t.rules.length);
+        if (active) return { rules: _withMeasurableRules(active.rules), source: active.name || 'Admin Template', template: active };
+    } catch (e) {
+        console.warn('[Validator] Could not read admin templates, using defaults:', e);
+    }
+    return { rules: _DEFAULT_FORMAT_RULES, source: 'Thesis Format and Assessment Checklist', template: null };
+}
+
+function _evaluateFormattingRule(rule, profile) {
+    var ev = _evaluateFormattingRuleRaw(rule, profile);
+    if (ev && profile && profile.estimated && ev.status === 'fail') {
+        return { status: 'manual', violations: [], checkedCount: ev.checkedCount };
+    }
+    return ev;
+}
+
+/* CHECKLIST_BUILTIN_ITEMS: full thesis checklist as built-in manual-review rules */
+(function () {
+    var lines = [
+  "# General Guidelines",
+  "S|The font style used in all parts of the manuscript is Times New Roman.",
+  "S|The font size used in all parts of the manuscript is 12.",
+  "S|Margins are strictly followed (left 1.5 inches, right 1 inch, top and bottom 1 inch).",
+  "S|The manuscript is printed on short bond paper (8.5 by 11 inches).",
+  "S|Pagination is found in the upper right corner on every page EXCEPT on the Chapter pages.",
+  "S|Pagination in the preliminary pages uses small-letter Roman numerals.",
+  "S|Pagination on the Title Page and Approval Sheet is not shown.",
+  "S|The manuscript is double-spaced.",
+  "R|The references used are within the last ten (10) years, except for theories.",
+  "R|The manuscript contains correct and proper citations.",
+  "# Preliminary Pages",
+  "R|The manuscript has the required TITLE PAGE.",
+  "R|The manuscript has the required APPROVAL SHEET.",
+  "L|The manuscript has the required ACKNOWLEDGEMENT. Maximum of 2 pages.",
+  "R|The manuscript has the required ABSTRACT.",
+  "L|The abstract is one paragraph, single-spaced, about 250 to 350 words in length.",
+  "R|The abstract contains the general purpose of the study, participants and sampling technique, research design, statistical treatment, significant/major findings, conclusions, and recommendations.",
+  "O|The abstract may contain recommendations for a universal or broader application or implications of the study.",
+  "S|Keywords (5 words, italicized): must include the critical concept/variables, respondents, research design and research locale.",
+  "R|The manuscript has the required TABLE OF CONTENTS.",
+  "R|The manuscript has the required LIST OF TABLES.",
+  "R|The manuscript has the required LIST OF FIGURES.",
+  "R|The manuscript has the required LIST OF APPENDICES.",
+  "# Chapter 1 - Introduction",
+  "R|The Introduction leads the reader from a general subject area to a specific topic of inquiry.",
+  "R|The Introduction includes a Literature Review.",
+  "L|The Introduction has a maximum of 3 pages.",
+  "R|The first paragraph contains a global situation analysis of the problem, cohesively written and supported by related literature and studies from different continents, with at least ten (10) in-text citations.",
+  "R|The second paragraph presents an ASEAN situational analysis of the problem, including local studies in the country, with at least ten (10) in-text citations.",
+  "R|The third paragraph compares or contrasts global and ASEAN literature or studies. It includes the research gap (what is known and what is missing) and states the importance of addressing it. Gaps may be theoretical/conceptual, methodological, or contextual.",
+  "R|The fourth paragraph states the importance of the study, including the main objective, scope, possible key results, solutions, and implications based on the literature analysis.",
+  "# Chapter 1 - Theoretical Framework / Philosophical Underpinning",
+  "R|The Theoretical Framework (quantitative) or Philosophical Underpinning (qualitative) is presented and discussed in textual form with at least one (1) in-text citation, using the SEC format.",
+  "R|S - State: states the theory or philosophical underpinning, its proponent/s, and its main idea or principle, with at least one (1) in-text citation.",
+  "R|E - Explain: explains the key concepts or principles of the theory in relation to the study and how they help explain the variables, concepts, or phenomenon. Avoids merely defining or describing the theory.",
+  "R|C - Connect: connects the theory directly to the study, showing why it is appropriate and how it serves as the foundation of the study.",
+  "# Chapter 1 - Conceptual Framework",
+  "R|A model or research paradigm shows a visual representation of the expected relationship between variables.",
+  "R|There is a written or textual description of the model or research paradigm.",
+  "# Chapter 1 - Statement of the Problem",
+  "R|The Statement of the Problem states the general objective/purpose of the study.",
+  "R|The 2nd paragraph provides the specific objectives in question form that are measurable and attainable.",
+  "# Chapter 1 - Hypothesis (Quantitative Research)",
+  "R|The Hypothesis/Hypotheses states the numbered null hypothesis of the study.",
+  "# Chapter 1 - Scope and Limitations",
+  "R|The Scope and Limitations are in one to three paragraphs and contain the general purpose, participants and sampling technique, research design, instrument, limitations, and statistical treatment.",
+  "# Chapter 1 - Significance of the Study",
+  "R|There is a preliminary statement.",
+  "R|The Significance convinces the reader that the study contributes to stakeholders: solving educational problems, bridging a knowledge gap, improving social conditions, enriching research instruments and methods, and supporting government thrusts.",
+  "R|Beneficiaries are arranged from those who benefit the most to the least.",
+  "# Chapter 1 - Definition of Terms",
+  "R|There is a preliminary statement on how the terms or variables are used (operationally or contextually).",
+  "S|The terms are in bold text.",
+  "S|The terms are alphabetically arranged.",
+  "S|Each definition starts with the statement \"This refers to...\".",
+  "# Chapter 2 - Review of Related Literature and Studies",
+  "R|There is a preliminary statement or short description of what to expect in Chapter 2.",
+  "R|The literature review synthesizes the meaning of the study variables through in-text citations.",
+  "R|The literature review is in a thematic format based on the variables.",
+  "R|The Synthesis summarizes the main findings and insights of the reviewed literature and studies, highlighting common themes, trends, and gaps.",
+  "R|The Synthesis connects the findings to the researcher's own topic.",
+  "# Chapter 3 - Methodology",
+  "R|There is a preliminary statement or short description of what to expect in Chapter 3.",
+  "R|Method of Research: the type of research is presented and discussed with at least two (2) in-text citations.",
+  "R|Method of Research: the research design used is explained.",
+  "R|Population and Sampling: the respondents and the research locale are presented and discussed.",
+  "R|Population and Sampling: the sampling technique is explained.",
+  "O|Population and Sampling: a table for the distribution of respondents is presented and discussed (if any).",
+  "R|Research Instrument: the first paragraph describes the survey questionnaire (adapted/adopted or researcher-made), including construction, development, parts, contents, and scales used.",
+  "R|Research Instrument: for adapted/adopted instruments, the source is discussed with at least one (1) in-text citation; for researcher-made questionnaires, the construction is explained thoroughly.",
+  "R|Research Instrument: the second paragraph describes the validity and reliability test results, indicating the appendix letter.",
+  "R|Data Gathering: the first part presents the procedure, including approval and permission from the head of the institution/agency and the actual data collection.",
+  "R|Data Gathering: the second part discusses ethical considerations, including the Data Protection Act, Data Privacy Notice (for Google Form or online collection), and Informed Consent.",
+  "R|Data Analysis: the first paragraph presents how the data is analyzed.",
+  "R|Data Analysis (quantitative): descriptive and inferential statistical tools are presented with their use and formulas.",
+  "O|Data Analysis (qualitative): the process of coding and creating themes is described in paragraph form.",
+  "R|Ethical Considerations - Ethical Approval and Consent: states the permission secured and explains informed consent/assent and voluntary participation.",
+  "R|Ethical Considerations - Protection of Participants: explains how rights, welfare, confidentiality, and data privacy were protected.",
+  "R|Ethical Considerations - Research Integrity: states how academic integrity, proper citation, honest reporting, and ethical standards were observed.",
+  "# Chapter 4 - Presentation, Analysis and Interpretation of Data",
+  "R|There is a preliminary statement or short description of what to expect in Chapter 4.",
+  "S|The presentation follows the order of the SOP, with the appropriate number and a heading/title in sentence case, bold, without a period.",
+  "S|The tables are correctly numbered and titled.",
+  "S|There are no hanging tables.",
+  "R|The presentation of each variable indicates interesting and significant facts (in textual format) found in every table.",
+  "R|There is a discussion and interpretation of results in each table, answering the research question and critically evaluating the results.",
+  "R|The discussion reviews previous findings and existing knowledge for each table with at least 2 or 3 in-text citations.",
+  "R|Hypothesis testing results are interpreted and reviewed against related findings that corroborate or contradict each significant variable, with at least 2-3 in-text citations.",
+  "R|The discussion presents the implications of the findings for policy and practice.",
+  "# Chapter 5 - Summary of Findings, Conclusions, and Recommendations",
+  "R|There is a preliminary statement or short description of what to expect in Chapter 5.",
+  "R|Summary of Findings follows the order of the SOP, with appropriate numbering, in textual format.",
+  "R|Conclusions: the first part provides an introductory statement.",
+  "R|Conclusions follow the order of the SOP with appropriate numbering, discussing the practical implications of the study.",
+  "R|Recommendations: the first part provides an introductory statement.",
+  "R|Recommendations follow the order from the most to the least beneficial entity, with appropriate numbering, based on the limitations/weaknesses.",
+  "R|The last recommendation suggests topics for further research.",
+  "# References",
+  "S|The word REFERENCES is bold, capital, font size 38, centered, and in the middle of the page.",
+  "R|References are alphabetically arranged with hanging indention (APA 6th or 7th edition), and only traceable/online sources are used in Chapters 1 to 4.",
+  "# Appendices",
+  "S|The word APPENDICES is bold, capital, font size 38, centered, and in the middle of the page.",
+  "R|Appendix A - Permission/Approval Letter: scanned and signed letter from the head of the institution/agency, secured before data gathering.",
+  "R|Appendix B - Questionnaire/Interview Guide: the instruments are included.",
+  "R|Appendix C - Informed Consent/Assent Form: the consent/assent form is included.",
+  "R|Appendix D - Certificate of Validation: scanned and signed validation form from the panel.",
+  "R|Appendix E - Certificate of Editing: signed grammarian's certificate.",
+  "O|Appendix F - Reliability Test Results (if any): scanned and signed results with a summary of computations.",
+  "R|Appendix G - Certificate of Data Analysis: signed statistician's certificate.",
+  "O|Appendix G - Qualitative research: certificate that the data were thematically analyzed with proper codes and themes.",
+  "L|Appendix H - Certificate of Similarity and AI Checking: Turnitin or PlagScan used; at most 15% similarity and AI result.",
+  "R|Appendix I - Documentation: pictures of the data gathering.",
+  "R|Appendix J - Sample Tally Sheet: the sample tally sheet used in the study.",
+  "L|Appendix K - Curriculum Vitae: a CV with a 1.5 by 1.5 inch picture, maximum of one (1) page per author."
+    ];
+    var typeMap = { R: 'Required', S: 'Style', L: 'Length', O: 'Optional', F: 'File' };
+    var section = '';
+    var n = 0;
+    lines.forEach(function (line) {
+        if (line.charAt(0) === '#') { section = line.slice(2); return; }
+        var text = line.slice(2);
+        var words = text.split(' ');
+        n++;
+        _DEFAULT_FORMAT_RULES.push({
+            id: 'checklist-item-' + n,
+            name: section + ': ' + words.slice(0, 6).join(' ') + (words.length > 6 ? '...' : ''),
+            type: typeMap[line.charAt(0)] || 'Required',
+            detail: text
+        });
+    });
+})();
+
+/* CHECKLIST_PICKER_OPTION: built-in checklist listed first in the template picker */
+const _CHECKLIST_PSEUDO = {
+    id: '__checklist__',
+    name: 'Thesis Format and Assessment Checklist',
+    type: 'Built-in',
+    description: 'Standard thesis criteria: double spacing, margins, chapters 1 to 5, references and appendices.',
+    active: true,
+    builtin: true,
+    rules: _DEFAULT_FORMAT_RULES
+};
+
+function _getActiveFormatTemplates() {
+    var list = _getActiveFormatTemplatesOriginal().filter(function (x) {
+        return x && x.name !== 'Thesis Format and Assessment Checklist';
+    });
+    return [_CHECKLIST_PSEUDO].concat(list);
+}
+
+/* CHECKLIST_FIX_FONT: auto-fixed DOCX also gets Times New Roman 12 when the checklist is used */
+async function _dvGenerateFixedDocx(file, rules, formattingProfile) {
+    var blob = await _dvGenerateFixedDocxOriginal(file, rules, formattingProfile);
+    var useChecklist = (rules || []).some(function (r) { return r && (r.id === 'checklist-spacing' || r.id === 'checklist-margin'); });
+    if (!useChecklist || !window.JSZip) return blob;
+    try {
+        var zip = await JSZip.loadAsync(blob);
+        var xmlFile = zip.file('word/document.xml');
+        if (!xmlFile) return blob;
+        var xmlDoc = new DOMParser().parseFromString(await xmlFile.async('string'), 'application/xml');
+        var W = _WORD_NS;
+        var AFTER_SZ = ['highlight', 'u', 'effect', 'bdr', 'shd', 'fitText', 'vertAlign', 'rtl', 'cs', 'em', 'lang', 'eastAsianLayout', 'specVanish', 'oMath'];
+        var runs = xmlDoc.getElementsByTagNameNS(W, 'r');
+        for (var i = 0; i < runs.length; i++) {
+            var r = runs[i];
+            var rPr = null;
+            for (var c = r.firstChild; c; c = c.nextSibling) {
+                if (c.localName === 'rPr' && c.namespaceURI === W) { rPr = c; break; }
+            }
+            if (!rPr) {
+                rPr = xmlDoc.createElementNS(W, 'w:rPr');
+                r.insertBefore(rPr, r.firstChild);
+            }
+            ['rFonts', 'sz', 'szCs'].forEach(function (nm) {
+                Array.from(rPr.getElementsByTagNameNS(W, nm)).forEach(function (x) { if (x.parentNode === rPr) rPr.removeChild(x); });
+            });
+            var fonts = xmlDoc.createElementNS(W, 'w:rFonts');
+            ['ascii', 'hAnsi', 'cs', 'eastAsia'].forEach(function (a2) { fonts.setAttributeNS(W, 'w:' + a2, 'Times New Roman'); });
+            var first = rPr.firstChild;
+            if (first && first.localName === 'rStyle') rPr.insertBefore(fonts, first.nextSibling);
+            else rPr.insertBefore(fonts, first);
+            var sz = xmlDoc.createElementNS(W, 'w:sz'); sz.setAttributeNS(W, 'w:val', '24');
+            var szCs = xmlDoc.createElementNS(W, 'w:szCs'); szCs.setAttributeNS(W, 'w:val', '24');
+            var ref = null;
+            for (var k = rPr.firstChild; k; k = k.nextSibling) {
+                if (k.namespaceURI === W && AFTER_SZ.indexOf(k.localName) !== -1) { ref = k; break; }
+            }
+            rPr.insertBefore(sz, ref);
+            rPr.insertBefore(szCs, ref);
+        }
+        zip.file('word/document.xml', new XMLSerializer().serializeToString(xmlDoc));
+        return await zip.generateAsync({ type: 'blob' });
+    } catch (e) {
+        console.warn('[Validator] font fix skipped', e);
+        return blob;
+    }
+}
+
+/* TEMPLATES_ONLY: only published format templates are listed; built-in checklist removed from the picker */
+_getActiveFormatTemplates = function () { return _getActiveFormatTemplatesOriginal(); };
+
+
+/* PDF_FIX_DISABLED: a PDF cannot be corrected faithfully, so the rebuilt copy is turned off */
+async function _dvGenerateFixedPdf() {
+    throw new Error('Auto-fix works on .docx files only. Upload a Word (.docx) version, or fix the PDF in Word and export it again.');
+}
+
+/* GENERATE_ERROR_MODAL: show "Could not generate ..." errors in a modal instead of a browser alert */
+(function () {
+    var nativeAlert = window.alert;
+
+    function showModal(title, message) {
+        var opener = document.activeElement;
+        var overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(3,8,24,.6);z-index:2147483000;display:flex;align-items:center;justify-content:center;padding:20px;-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);';
+
+        var box = document.createElement('div');
+        box.setAttribute('role', 'alertdialog');
+        box.setAttribute('aria-modal', 'true');
+        box.style.cssText = 'width:100%;max-width:440px;background:var(--surface,#0f1830);color:var(--text,#e7edfb);border:1px solid var(--border,#1e2a4a);border-radius:16px;box-shadow:0 24px 60px -12px rgba(0,0,0,.5);overflow:hidden;font-family:inherit;';
+
+        var head = document.createElement('div');
+        head.style.cssText = 'padding:18px 22px 14px;border-bottom:1px solid var(--border,#1e2a4a);font-size:16px;font-weight:700;display:flex;align-items:center;gap:10px;';
+        head.textContent = '\u26A0\uFE0F ' + title;
+
+        var body = document.createElement('div');
+        body.style.cssText = 'padding:18px 22px;font-size:14px;line-height:1.55;color:var(--muted,#93a2c6);';
+        body.textContent = message;
+
+        var row = document.createElement('div');
+        row.style.cssText = 'padding:0 22px 20px;display:flex;justify-content:flex-end;';
+        var ok = document.createElement('button');
+        ok.type = 'button';
+        ok.textContent = 'OK';
+        ok.style.cssText = 'padding:9px 24px;border:none;border-radius:9px;background:#22c55e;color:#04210f;font-size:13px;font-weight:700;cursor:pointer;';
+        row.appendChild(ok);
+
+        box.appendChild(head);
+        box.appendChild(body);
+        box.appendChild(row);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+
+        function close() {
+            document.removeEventListener('keydown', onKey, true);
+            overlay.remove();
+            if (opener && opener.focus && document.contains(opener)) opener.focus();
+        }
+        function onKey(e) {
+            if (e.key === 'Escape' || e.key === 'Enter') { e.stopPropagation(); close(); }
+        }
+        ok.addEventListener('click', close);
+        overlay.addEventListener('mousedown', function (e) { if (e.target === overlay) close(); });
+        document.addEventListener('keydown', onKey, true);
+        ok.focus();
+    }
+
+    window.alert = function (msg) {
+        var s = String(msg == null ? '' : msg);
+        var m = s.match(/^Could not generate the (auto-fixed|redlined) copy:\s*([\s\S]*)$/i);
+        if (m) {
+            showModal(m[1].toLowerCase() === 'auto-fixed' ? 'Auto-fix not available' : 'Redlined copy not available', m[2]);
+            return;
+        }
+        return nativeAlert.call(window, msg);
+    };
+})();
+
+/* CHECKLIST_FULL_FIX: .docx auto-fix applies the thesis checklist */
+(function () {
+    var W = _WORD_NS;
+    var PPR = ['pStyle','keepNext','keepLines','pageBreakBefore','framePr','widowControl','numPr','suppressLineNumbers','pBdr','shd','tabs','suppressAutoHyphens','kinsoku','wordWrap','overflowPunct','topLinePunct','autoSpaceDE','autoSpaceDN','bidi','adjustRightInd','snapToGrid','spacing','ind','contextualSpacing','mirrorIndents','suppressOverlap','jc','textDirection','textAlignment','textboxTightWrap','outlineLvl','divId','cnfStyle','rPr','sectPr','pPrChange'];
+    var RPR = ['rStyle','rFonts','b','bCs','i','iCs','caps','smallCaps','strike','dstrike','outline','shadow','emboss','imprint','noProof','snapToGrid','vanish','webHidden','color','spacing','w','kern','position','sz','szCs','highlight','u','effect','bdr','shd','fitText','vertAlign','rtl','cs','em','lang','eastAsianLayout','specVanish','oMath'];
+    var SECT = ['headerReference','footerReference','footnotePr','endnotePr','type','pgSz','pgMar','paperSrc','pgBorders','lnNumType','pgNumType','cols','formProt','vAlign','noEndnote','titlePg','textDirection','bidi','rtlGutter','docGrid','printerSettings','sectPrChange'];
+    var HEAD_END = /^(TABLE OF CONTENTS|LIST OF TABLES|LIST OF FIGURES|LIST OF APPENDICES|CHAPTER\s*\d|INTRODUCTION|ACKNOWLEDGEMENTS?)/;
+
+    function kid(parent, name) {
+        for (var c = parent.firstChild; c; c = c.nextSibling) {
+            if (c.nodeType === 1 && c.localName === name && c.namespaceURI === W) return c;
+        }
+        return null;
+    }
+    function getOrCreate(doc, parent, order, name) {
+        var ex = kid(parent, name);
+        if (ex) return ex;
+        var el = doc.createElementNS(W, 'w:' + name);
+        var idx = order.indexOf(name), ref = null;
+        for (var c = parent.firstChild; c; c = c.nextSibling) {
+            if (c.nodeType === 1 && order.indexOf(c.localName) > idx) { ref = c; break; }
+        }
+        parent.insertBefore(el, ref);
+        return el;
+    }
+    function setA(el, n, v) { el.setAttributeNS(W, 'w:' + n, String(v)); }
+    function ptext(p) {
+        return Array.from(p.getElementsByTagNameNS(W, 't')).map(function (n) { return n.textContent; }).join('').trim();
+    }
+    function inTable(p) {
+        for (var n = p.parentNode; n; n = n.parentNode) { if (n.localName === 'tc') return true; }
+        return false;
+    }
+    function pPrOf(doc, p) {
+        var x = kid(p, 'pPr');
+        if (!x) { x = doc.createElementNS(W, 'w:pPr'); p.insertBefore(x, p.firstChild); }
+        return x;
+    }
+
+    _dvGenerateFixedDocx = async function (file, rules, formattingProfile) {
+        var useChecklist = (rules || []).some(function (r) { return r && (r.id === 'checklist-spacing' || r.id === 'checklist-margin'); });
+        if (!useChecklist) return _dvGenerateFixedDocxOriginal(file, rules, formattingProfile);
+        if (!window.JSZip) await new Promise(function (res) { _validatorDeps.ensureJSZip(res); });
+
+        var zip = await JSZip.loadAsync(await _resolveArrayBuffer(file));
+        var xf = zip.file('word/document.xml');
+        if (!xf) throw new Error('Not a valid DOCX');
+        var doc = new DOMParser().parseFromString(await xf.async('string'), 'application/xml');
+
+        var zone = 'front';
+        Array.from(doc.getElementsByTagNameNS(W, 'p')).forEach(function (p) {
+            var t = ptext(p), up = t.toUpperCase(), tbl = inTable(p), kind = 'body';
+            if (!tbl && t) {
+                if (t.length <= 20 && up === 'ABSTRACT') { zone = 'abstract'; kind = 'head'; }
+                else if (t.length <= 20 && up === 'REFERENCES') { zone = 'references'; kind = 'big'; }
+                else if (t.length <= 20 && up === 'APPENDICES') { zone = 'appendices'; kind = 'big'; }
+                else if (t.length <= 60 && HEAD_END.test(up) && zone !== 'appendices') { zone = 'body'; }
+                else if (zone === 'abstract' && /^keywords?\b/i.test(t)) { kind = 'keywords'; }
+            }
+            var pPr = pPrOf(doc, p);
+
+            if (!tbl && t) {
+                var skip = (zone === 'appendices' && kind !== 'big');
+                if (!skip) {
+                    var single = (zone === 'abstract' && kind !== 'head') || kind === 'keywords';
+                    var sp = getOrCreate(doc, pPr, PPR, 'spacing');
+                    setA(sp, 'line', single ? 240 : 480);
+                    setA(sp, 'lineRule', 'auto');
+                }
+                if (kind === 'big') {
+                    setA(getOrCreate(doc, pPr, PPR, 'jc'), 'val', 'center');
+                    Array.from(p.getElementsByTagNameNS(W, 't')).forEach(function (n) { n.textContent = n.textContent.toUpperCase(); });
+                }
+                if (zone === 'references' && kind === 'body') {
+                    var ind = getOrCreate(doc, pPr, PPR, 'ind');
+                    ind.removeAttributeNS(W, 'firstLine');
+                    setA(ind, 'left', 720);
+                    setA(ind, 'hanging', 720);
+                }
+            }
+
+            Array.from(p.getElementsByTagNameNS(W, 'r')).forEach(function (r) {
+                var rPr = kid(r, 'rPr');
+                if (!rPr) { rPr = doc.createElementNS(W, 'w:rPr'); r.insertBefore(rPr, r.firstChild); }
+                var f = getOrCreate(doc, rPr, RPR, 'rFonts');
+                ['asciiTheme', 'hAnsiTheme', 'cstheme', 'eastAsiaTheme'].forEach(function (a) { f.removeAttributeNS(W, a); });
+                ['ascii', 'hAnsi', 'cs', 'eastAsia'].forEach(function (a) { setA(f, a, 'Times New Roman'); });
+                var size = (kind === 'big') ? 76 : 24;
+                setA(getOrCreate(doc, rPr, RPR, 'sz'), 'val', size);
+                setA(getOrCreate(doc, rPr, RPR, 'szCs'), 'val', size);
+                if (kind === 'big') {
+                    var b = getOrCreate(doc, rPr, RPR, 'b'); b.removeAttributeNS(W, 'val');
+                }
+                if (kind === 'keywords') {
+                    var it = getOrCreate(doc, rPr, RPR, 'i'); it.removeAttributeNS(W, 'val');
+                }
+            });
+        });
+
+        Array.from(doc.getElementsByTagNameNS(W, 'sectPr')).forEach(function (s) {
+            var mar = getOrCreate(doc, s, SECT, 'pgMar');
+            setA(mar, 'top', 1440); setA(mar, 'bottom', 1440); setA(mar, 'left', 2160); setA(mar, 'right', 1440);
+            var sz = getOrCreate(doc, s, SECT, 'pgSz');
+            if (sz.getAttributeNS(W, 'orient') !== 'landscape') { setA(sz, 'w', 12240); setA(sz, 'h', 15840); }
+        });
+
+        zip.file('word/document.xml', new XMLSerializer().serializeToString(doc));
+        return zip.generateAsync({ type: 'blob' });
+    };
+})();
+/* FORMAT_TEMPLATES_FROM_SERVER: load published templates from the backend (they used to be browser-only) */
+(function () {
+    if (document.getElementById('createModal')) return; // the admin templates page does its own sync
+    var API = 'https://aideanc-production.up.railway.app/api';
+    var FLAG = 'aidea_ft_from_server';
+    function token() { try { return localStorage.getItem('auth_token'); } catch (e) { return null; } }
+    window._dvRefreshTemplates = function () {
+        var t = token();
+        if (!t) return Promise.resolve();
+        return fetch(API + '/format-templates', { headers: { Accept: 'application/json', Authorization: 'Bearer ' + t } })
+            .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+            .then(function (res) {
+                var all = Array.isArray(res) ? res : (Array.isArray(res && res.templates) ? res.templates : []);
+                var list = all.filter(function (x) { return x && x.active !== false; });
+                if (list.length) {
+                    localStorage.setItem(_TEMPLATE_STORAGE_KEY, JSON.stringify(list));
+                    localStorage.setItem(FLAG, '1');
+                } else if (localStorage.getItem(FLAG)) {
+                    localStorage.setItem(_TEMPLATE_STORAGE_KEY, '[]');
+                    localStorage.removeItem(FLAG);
+                }
+            })
+            .catch(function (e) { console.warn('[Validator] could not load templates from server', e); });
+    };
+    window._dvRefreshTemplates();
+})();
+/* DV_PAGES: split the fixed paper into pages and apply page-specific fixes (title page date) */
+(function () {
+    var W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+    var MONTH = /^(January|February|March|April|May|June|July|August|September|October|November|December)\.?,?\s+(\d{1,2}(st|nd|rd|th)?,?\s*)?\d{4}\.?$/i;
+    var FIRST_HEAD = /^(APPROVAL SHEET|ACKNOWLEDGEMENTS?|ABSTRACT|TABLE OF CONTENTS|LIST OF TABLES|CHAPTER\s*\d)/;
+    var PPR_ORDER = ['pStyle','keepNext','keepLines','pageBreakBefore','framePr','widowControl','numPr','suppressLineNumbers','pBdr','shd','tabs','suppressAutoHyphens','kinsoku','wordWrap','overflowPunct','topLinePunct','autoSpaceDE','autoSpaceDN','bidi','adjustRightInd','snapToGrid','spacing','ind','contextualSpacing','mirrorIndents','suppressOverlap','jc','textDirection','textAlignment','textboxTightWrap','outlineLvl','divId','cnfStyle','rPr','sectPr','pPrChange'];
+
+    function kid(parent, name) {
+        for (var c = parent.firstChild; c; c = c.nextSibling) {
+            if (c.nodeType === 1 && c.localName === name && c.namespaceURI === W) return c;
+        }
+        return null;
+    }
+    function getOrCreate(doc, parent, name) {
+        var ex = kid(parent, name);
+        if (ex) return ex;
+        var el = doc.createElementNS(W, 'w:' + name);
+        var idx = PPR_ORDER.indexOf(name), ref = null;
+        for (var c = parent.firstChild; c; c = c.nextSibling) {
+            if (c.nodeType === 1 && PPR_ORDER.indexOf(c.localName) > idx) { ref = c; break; }
+        }
+        parent.insertBefore(el, ref);
+        return el;
+    }
+    function ptext(p) {
+        return Array.from(p.getElementsByTagNameNS(W, 't')).map(function (n) { return n.textContent; }).join('').trim();
+    }
+    function inTable(p) {
+        for (var n = p.parentNode; n; n = n.parentNode) { if (n.localName === 'tc') return true; }
+        return false;
+    }
+    function pageBrs(p) {
+        return Array.from(p.getElementsByTagNameNS(W, 'br')).filter(function (b) {
+            return (b.getAttributeNS(W, 'type') || b.getAttribute('w:type')) === 'page';
+        });
+    }
+
+    /* returns [{p, page, text, tbl}] in document order; page starts at 0 */
+    window._dvSplitPages = function (doc) {
+        var page = 0, has = false, info = [];
+        Array.from(doc.getElementsByTagNameNS(W, 'p')).forEach(function (p) {
+            var text = ptext(p), tbl = inTable(p);
+            var pPr = kid(p, 'pPr');
+            var brs = pageBrs(p), firstT = p.getElementsByTagNameNS(W, 't')[0];
+            var brBefore = brs.length && firstT && (brs[0].compareDocumentPosition(firstT) & 4);
+            var before = (pPr && kid(pPr, 'pageBreakBefore')) || p.getElementsByTagNameNS(W, 'lastRenderedPageBreak').length || brBefore;
+            if (before && has) { page++; has = false; }
+            info.push({ p: p, page: page, text: text, tbl: tbl });
+            if (text) has = true;
+            if ((brs.length && !brBefore) || (pPr && kid(pPr, 'sectPr'))) { page++; has = false; }
+        });
+        return info;
+    };
+
+    async function dvPageFix(blob) {
+        await new Promise(function (r) { _validatorDeps.ensureJSZip(r); });
+        var zip = await JSZip.loadAsync(blob);
+        var xf = zip.file('word/document.xml');
+        if (!xf) return blob;
+        var doc = new DOMParser().parseFromString(await xf.async('string'), 'application/xml');
+        var info = window._dvSplitPages(doc);
+
+        var headIdx = Infinity;
+        for (var i = 0; i < info.length; i++) {
+            var up = info[i].text.toUpperCase();
+            if (!info[i].tbl && info[i].text && up.length <= 60 && FIRST_HEAD.test(up)) { headIdx = i; break; }
+        }
+
+        var changed = 0;
+        info.forEach(function (it, idx) {
+            if (it.tbl || it.page !== 0 || idx >= headIdx) return;   /* title page only */
+            if (!MONTH.test(it.text)) return;
+            var pPr = kid(it.p, 'pPr');
+            if (!pPr) { pPr = doc.createElementNS(W, 'w:pPr'); it.p.insertBefore(pPr, it.p.firstChild); }
+            var jc = getOrCreate(doc, pPr, 'jc');
+            jc.setAttributeNS(W, 'w:val', 'center');
+            var ind = kid(pPr, 'ind');
+            if (ind) pPr.removeChild(ind);
+            Array.from(it.p.getElementsByTagNameNS(W, 'tab')).forEach(function (t) {
+                if (t.parentNode && t.parentNode.localName === 'r') t.parentNode.removeChild(t);
+            });
+            var firstT = it.p.getElementsByTagNameNS(W, 't')[0];
+            if (firstT) firstT.textContent = firstT.textContent.replace(/^\s+/, '');
+            changed++;
+        });
+        /* DV_TITLEFIT: title page in single spacing, next section starts on a new page */
+        var titleEnd = headIdx;
+        if (titleEnd === Infinity) {
+            var lastP0 = -1;
+            info.forEach(function (it, i) { if (it.page === 0) lastP0 = i; });
+            titleEnd = (lastP0 >= 0 && lastP0 < info.length - 1) ? lastP0 + 1 : -1;
+        }
+        if (titleEnd > 0) {
+            info.forEach(function (it, idx) {
+                if (it.tbl || it.page !== 0 || idx >= titleEnd) return;
+                var tpPr = kid(it.p, 'pPr');
+                if (!tpPr) { tpPr = doc.createElementNS(W, 'w:pPr'); it.p.insertBefore(tpPr, it.p.firstChild); }
+                var tsp = getOrCreate(doc, tpPr, 'spacing');
+                tsp.setAttributeNS(W, 'w:line', '240');
+                tsp.setAttributeNS(W, 'w:lineRule', 'auto');
+                changed++;
+            });
+            if (headIdx !== Infinity && info[headIdx] && info[headIdx].page === 0) {
+                var hpPr = kid(info[headIdx].p, 'pPr');
+                if (!hpPr) { hpPr = doc.createElementNS(W, 'w:pPr'); info[headIdx].p.insertBefore(hpPr, info[headIdx].p.firstChild); }
+                getOrCreate(doc, hpPr, 'pageBreakBefore');
+                changed++;
+            }
+        }
+        if (!changed) return blob;
+        zip.file('word/document.xml', new XMLSerializer().serializeToString(doc));
+        return await zip.generateAsync({ type: 'blob' });
+    }
+
+    var prev = _dvGenerateFixedDocx;
+    _dvGenerateFixedDocx = async function (file, rules, formattingProfile) {
+        var blob = await prev(file, rules, formattingProfile);
+        var useChecklist = (rules || []).some(function (r) { return r && (r.id === 'checklist-spacing' || r.id === 'checklist-margin'); });
+        if (!useChecklist && !/double-spaced|Margins are strictly followed|Times New Roman/i.test(JSON.stringify(rules || []))) return blob;
+        try { return await dvPageFix(blob); }
+        catch (e) { console.warn('[Validator] page fixes skipped', e); return blob; }
+    };
+})();
+/* DV_PAGINATE: add page breaks to continuous papers so the preview shows separate pages */
+(function () {
+    var W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+    window._dvPaginateOn = true;   /* set to false in Console to turn off */
+
+    function kid(parent, name) {
+        for (var c = parent.firstChild; c; c = c.nextSibling) {
+            if (c.nodeType === 1 && c.localName === name && c.namespaceURI === W) return c;
+        }
+        return null;
+    }
+    function wAttr(el, n) { return el ? (el.getAttributeNS(W, n) || el.getAttribute('w:' + n)) : null; }
+    function px(twips) { return twips / 1440 * 96; }
+
+    function forcedBefore(el) {
+        if (el.localName !== 'p') return false;
+        var pPr = kid(el, 'pPr');
+        var before = pPr && kid(pPr, 'pageBreakBefore');
+        if (before && !/^(0|false|off)$/i.test(wAttr(before, 'val') || '1')) return true;
+        var br = Array.from(el.getElementsByTagNameNS(W, 'br')).filter(function (b) { return wAttr(b, 'type') === 'page'; })[0];
+        var t = el.getElementsByTagNameNS(W, 't')[0];
+        return !!(br && (!t || (br.compareDocumentPosition(t) & 4)));
+    }
+    function forcedAfter(el) {
+        if (el.localName !== 'p' || forcedBefore(el)) return false;
+        return Array.from(el.getElementsByTagNameNS(W, 'br')).some(function (b) { return wAttr(b, 'type') === 'page'; });
+    }
+
+    window._dvFitFigureCaptions = function (root) {
+        root.querySelectorAll('section.docx > article > p').forEach(function (caption) {
+                if (!/^Figure\s*\d+(?:\.\d+)*\s*[.:-]/i.test((caption.textContent || '').trim())) return;
+                var figure = caption.previousElementSibling;
+                if (!figure) return;
+                var graphics = Array.from(figure.querySelectorAll('img,svg'));
+                if (!graphics.length) return;
+                var bottom = Math.max.apply(null, graphics.map(function (graphic) { return graphic.getBoundingClientRect().bottom; }));
+                var overlap = bottom - caption.getBoundingClientRect().top;
+                if (overlap > 0) caption.style.marginTop = ((parseFloat(getComputedStyle(caption).marginTop) || 0) + overlap + 4) + 'px';
+            });
+    };
+
+    async function paginate(blob, orig) {
+        await new Promise(function (r) { _validatorDeps.ensureJSZip(r); });
+        var zip = await JSZip.loadAsync(blob);
+        var xf = zip.file('word/document.xml');
+        if (!xf) return blob;
+        var doc = new DOMParser().parseFromString(await xf.async('string'), 'application/xml');
+        var body = doc.getElementsByTagNameNS(W, 'body')[0];
+        if (!body) return blob;
+
+        /* drop Word's old page markers; we compute our own */
+        Array.from(doc.getElementsByTagNameNS(W, 'lastRenderedPageBreak')).forEach(function (n) { n.parentNode.removeChild(n); });
+
+        /* page size from the last section */
+        var sects = doc.getElementsByTagNameNS(W, 'sectPr');
+        var sp = sects[sects.length - 1], pgSz = sp && kid(sp, 'pgSz'), pgMar = sp && kid(sp, 'pgMar');
+        var pageH = parseInt(wAttr(pgSz, 'h'), 10) || 15840;
+        var pageW = parseInt(wAttr(pgSz, 'w'), 10) || 12240;
+        var top = parseInt(wAttr(pgMar, 'top'), 10) || 1440;
+        var bottom = parseInt(wAttr(pgMar, 'bottom'), 10) || 1440;
+        var contentH = px(pageH - Math.abs(top) - Math.abs(bottom));
+
+        var kids = Array.from(body.childNodes).filter(function (n) {
+            return n.nodeType === 1 && n.namespaceURI === W && (n.localName === 'p' || n.localName === 'tbl');
+        });
+
+        /* measure: render without page breaks in a hidden box */
+        var tmpBlob = new Blob([await (async function () {
+            zip.file('word/document.xml', new XMLSerializer().serializeToString(doc));
+            return await zip.generateAsync({ type: 'arraybuffer' });
+        })()], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+
+        var box = document.createElement('div');
+        box.style.cssText = 'position:absolute;left:-99999px;top:0;width:' + Math.ceil(px(pageW) + 40) + 'px;visibility:hidden;';
+        document.body.appendChild(box);
+        try {
+            await orig.call(window.docx, tmpBlob, box, null, {
+                inWrapper: false, breakPages: false, ignoreLastRenderedPageBreak: true,
+                ignoreHeight: true, renderHeaders: false, renderFooters: false
+            });
+            if (document.fonts && document.fonts.ready) await document.fonts.ready;
+
+            window._dvFitFigureCaptions(box);
+            var items = [];
+            Array.from(box.querySelectorAll('section.docx > article')).forEach(function (art, ai) {
+                var artTop = art.getBoundingClientRect().top;
+                Array.from(art.children).forEach(function (ch) {
+                    var r = ch.getBoundingClientRect(), cs = getComputedStyle(ch);
+                    var visualBottom = r.bottom;
+                    ch.querySelectorAll('img,svg').forEach(function (graphic) {
+                        visualBottom = Math.max(visualBottom, graphic.getBoundingClientRect().bottom);
+                    });
+                    items.push({
+                        art: ai,
+                        leadHeight: 2 * (parseFloat(cs.lineHeight) || (parseFloat(cs.fontSize) || 16) * 1.2),
+                        top: r.top - artTop - (parseFloat(cs.marginTop) || 0),
+                        bottom: visualBottom - artTop + (parseFloat(cs.marginBottom) || 0)
+                    });
+                });
+            });
+            if (items.length !== kids.length) {
+                console.warn('[Validator] paginate skipped: element count mismatch', items.length, kids.length);
+                return blob;
+            }
+
+            function keepWithNext(k) {
+                if (k.localName !== 'p') return false;
+                var pr = kid(k, 'pPr'), keep = pr && kid(pr, 'keepNext');
+                return !!keep && !/^(0|false|off)$/i.test(wAttr(keep, 'val') || '1');
+            }
+            function blankParagraph(k) {
+                return k.localName === 'p' && !Array.from(k.getElementsByTagNameNS(W, 't')).some(function (t) { return (t.textContent || '').trim(); }) &&
+                    !k.getElementsByTagNameNS(W, 'drawing').length;
+            }
+            function requiredBottom(index) {
+                var bottom = items[index].bottom, j = index;
+                while ((keepWithNext(kids[j]) || (j > index && blankParagraph(kids[j]))) && j + 1 < kids.length) {
+                    var next = items[j + 1];
+                    if (next.art !== items[index].art || forcedAfter(kids[j]) || forcedBefore(kids[j + 1])) break;
+                    j++;
+                    var captionText = Array.from(kids[j].getElementsByTagNameNS(W, 't')).map(function (t) { return t.textContent; }).join('').trim();
+                    var graphicBlock = kids[j].localName === 'tbl' || kids[j].getElementsByTagNameNS(W, 'drawing').length || kids[j].getElementsByTagNameNS(W, 'pict').length || kids[j].getElementsByTagNameNS(W, 'object').length;
+                    bottom = (graphicBlock || keepWithNext(kids[j]) || blankParagraph(kids[j]) || /^Figure\s*\d+(?:\.\d+)*\s*[.:-]/i.test(captionText)) ? next.bottom :
+                        Math.min(next.bottom, next.top + next.leadHeight);
+                }
+                return bottom;
+            }
+            var pageTop = null, curArt = -1, forceNext = false, breaks = 0;
+            kids.forEach(function (k, i) {
+                var it = items[i], mark = false;
+                if (it.art !== curArt) { curArt = it.art; pageTop = it.top; forceNext = false; }
+                else if (forceNext || forcedBefore(k)) { pageTop = it.top; forceNext = false; }
+                else if (requiredBottom(i) - pageTop > contentH + 1 && it.top > pageTop + 1) { mark = true; pageTop = it.top; }
+                if (forcedAfter(k)) forceNext = true;
+                if (mark) {
+                    var p = k.localName === 'p' ? k : k.getElementsByTagNameNS(W, 'p')[0];
+                    if (!p) return;
+                    var run = doc.createElementNS(W, 'w:r');
+                    run.appendChild(doc.createElementNS(W, 'w:lastRenderedPageBreak'));
+                    var pPr = kid(p, 'pPr');
+                    p.insertBefore(run, pPr ? pPr.nextSibling : p.firstChild);
+                    breaks++;
+                }
+            });
+            console.log('[Validator] paginate: inserted', breaks, 'page breaks');
+            if (!breaks) return blob;
+        } finally {
+            box.parentNode.removeChild(box);
+        }
+        zip.file('word/document.xml', new XMLSerializer().serializeToString(doc));
+        return await zip.generateAsync({ type: 'blob' });
+    }
+
+    function hook() {
+        if (!window.docx || !window.docx.renderAsync || window.docx.__dvPaged) return false;
+        var orig = window.docx.renderAsync;
+        window.docx.renderAsync = async function (data, bodyEl, styleEl, opts) {
+            if (!window._dvPaginateOn || (opts && (opts.__dvMeasure || opts.renderComments))) return orig.apply(this, arguments);
+            try {
+                var blob = (data instanceof Blob) ? data : new Blob([data]);
+                var nb = await paginate(blob, orig);
+                var o = Object.assign({}, opts || {}, { breakPages: true, ignoreLastRenderedPageBreak: false });
+                return await orig.call(this, nb, bodyEl, styleEl, o);
+            } catch (e) {
+                console.warn('[Validator] paginate failed, rendering normally', e);
+                return orig.apply(this, arguments);
+            }
+        };
+        window.docx.__dvPaged = true;
+        return true;
+    }
+    window._dvEnsurePagination = hook;
+    if (!hook()) {
+        var tries = 0, t = setInterval(function () { if (hook() || ++tries > 7200) clearInterval(t); }, 500);
+    }
+})();
+/* DV_PREVIEW_BUTTONS: preview of the fixed paper + list of rules that need attention */
+(function () {
+    var DPS = [
+        'https://cdn.jsdelivr.net/npm/docx-preview@0.3.2/dist/docx-preview.min.js',
+        'https://cdnjs.cloudflare.com/ajax/libs/docx-preview/0.3.2/docx-preview.min.js',
+        'https://unpkg.com/docx-preview@0.3.2/dist/docx-preview.min.js'
+    ];
+
+    function loadScript(src) {
+        return new Promise(function (resolve, reject) {
+            var s = document.createElement('script');
+            s.src = src; s.onload = resolve;
+            s.onerror = function () { s.remove(); reject(new Error('failed: ' + src)); };
+            document.head.appendChild(s);
+        });
+    }
+
+    function loadPreviewLib() {
+        if (window.docx && window.docx.renderAsync) return Promise.resolve();
+        var i = 0;
+        function next() {
+            if (i >= DPS.length) return Promise.reject(new Error('Preview library could not load from any source. Check your internet connection or ad blocker.'));
+            return loadScript(DPS[i++]).then(function () {
+                if (!(window.docx && window.docx.renderAsync)) throw new Error('bad library');
+            }).catch(next);
+        }
+        return next();
+    }
+    window._dvLoadPreviewLib = loadPreviewLib;
+    /* DV_PAGE_VIEW: show the document as separate pages */
+    (function () {
+        if (document.getElementById('dvPageViewCss')) return;
+        var st = document.createElement('style');
+        st.id = 'dvPageViewCss';
+        st.textContent =
+            '#dvPrevOverlay .docx-wrapper{background:#6b7280!important;padding:20px 12px!important;display:flex;flex-flow:column;align-items:center;}' +
+            '#dvPrevOverlay .docx-wrapper>section.docx{background:#fff!important;color:#000;box-shadow:0 2px 10px rgba(0,0,0,.5);margin-bottom:20px!important;flex:none;}';
+        document.head.appendChild(st);
+    })();
+
+    /* DV_CLEAN_FIXED: strip redline notes from the fixed copy before previewing it */
+    async function dvCleanRedNotes(blob) {
+        try {
+            await new Promise(function (r) { _validatorDeps.ensureJSZip(r); });
+            var zip = await JSZip.loadAsync(blob);
+            var xf = zip.file('word/document.xml');
+            if (!xf) return blob;
+            var doc = new DOMParser().parseFromString(await xf.async('string'), 'application/xml');
+            var W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+            function isRed(v) {
+                if (!/^[0-9a-f]{6}$/i.test(v || '')) return false;
+                var r = parseInt(v.substr(0, 2), 16), g = parseInt(v.substr(2, 2), 16), b = parseInt(v.substr(4, 2), 16);
+                return r >= 176 && g <= 112 && b <= 112;
+            }
+            function drop(n) { if (n.parentNode) n.parentNode.removeChild(n); }
+            /* DV_CLEAN_FIXED2 */ Array.from(doc.getElementsByTagNameNS(W, 'shd')).forEach(function (s) { var fl = (s.getAttributeNS(W, 'fill') || s.getAttribute('w:fill') || '').toUpperCase(); if (fl === 'FFF3B0') drop(s); });
+            ['highlight', 'commentRangeStart', 'commentRangeEnd', 'commentReference'].forEach(function (nm) {
+                Array.from(doc.getElementsByTagNameNS(W, nm)).forEach(drop);
+            });
+            Array.from(doc.getElementsByTagNameNS(W, 'p')).forEach(function (p) {
+                var runs = Array.from(p.getElementsByTagNameNS(W, 'r')).filter(function (r) {
+                    return Array.from(r.getElementsByTagNameNS(W, 't')).some(function (t) { return (t.textContent || '').trim(); });
+                });
+                if (!runs.length) return;
+                var allRed = runs.every(function (r) {
+                    var c = r.getElementsByTagNameNS(W, 'color')[0];
+                    return c && isRed(c.getAttributeNS(W, 'val') || c.getAttribute('w:val'));
+                });
+                if (allRed) drop(p);
+            });
+            zip.file('word/document.xml', new XMLSerializer().serializeToString(doc));
+            return await zip.generateAsync({ type: 'blob' });
+        } catch (e) {
+            console.warn('[Validator] could not clean fixed copy', e);
+            return blob;
+        }
+    }
+
+    function openOverlay(title) {
+        var old = document.getElementById('dvPrevOverlay');
+        if (old) old.remove();
+        var o = document.createElement('div');
+        o.id = 'dvPrevOverlay';
+        o.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;padding:16px;';
+        o.innerHTML =
+            '<div style="background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:12px;width:min(900px,100%);max-height:92vh;display:flex;flex-direction:column;">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #374151;">' +
+            '<strong>' + title + '</strong>' +
+            '<button type="button" id="dvPrevClose" style="background:none;border:0;color:#e5e7eb;font-size:22px;cursor:pointer;">&times;</button></div>' +
+            '<div id="dvPrevBody" style="padding:14px 16px;overflow:auto;"></div></div>';
+        o.addEventListener('click', function (e) { if (e.target === o) o.remove(); });
+        document.body.appendChild(o);
+        document.getElementById('dvPrevClose').onclick = function () { o.remove(); };
+        return document.getElementById('dvPrevBody');
+    }
+
+    function keepCoverDateOnFirstPage(holder) {
+        var sheets = holder.querySelectorAll('.docx-wrapper > section.docx');
+        if (sheets.length < 2) return;
+        var first = sheets[0].querySelector('article');
+        var second = sheets[1].querySelector('article');
+        if (!first || !second) return;
+        var datePattern = /^(January|February|March|April|May|June|July|August|September|October|November|December)\b.*\d{4}\.?$/i;
+        if (Array.from(first.children).some(function (p) { return datePattern.test((p.textContent || '').trim()); })) return;
+        var date = null;
+        for (var p of Array.from(second.children)) {
+            var text = (p.textContent || '').trim();
+            if (/^CHAPTER\s*(1|I|ONE)\b/i.test(text)) break;
+            if (datePattern.test(text)) { date = p; break; }
+            if (text) return;
+        }
+        if (!date || Array.from(first.children).some(function (p) { return /^CHAPTER\s/i.test((p.textContent || '').trim()); })) return;
+        while (first.lastElementChild && !(first.lastElementChild.textContent || '').trim() &&
+            !first.lastElementChild.querySelector('img,svg,table')) first.lastElementChild.remove();
+        first.appendChild(date);
+        date.style.textAlign = 'center';
+        var sheetStyle = getComputedStyle(sheets[0]);
+        var available = sheets[0].clientHeight - (parseFloat(sheetStyle.paddingTop) || 0) -
+            (parseFloat(sheetStyle.paddingBottom) || 0);
+        var bottom = date.getBoundingClientRect().bottom - first.getBoundingClientRect().top;
+        var overflow = Math.max(0, bottom - available + 8);
+        if (overflow) {
+            var gaps = Array.from(first.children).map(function (p) {
+                return { node: p, gap: Math.max(0, parseFloat(getComputedStyle(p).marginTop) || 0) };
+            });
+            var total = gaps.reduce(function (sum, p) { return sum + p.gap; }, 0);
+            gaps.forEach(function (p) {
+                if (p.gap && total) p.node.style.marginTop = Math.max(0, p.gap - overflow * p.gap / total) + 'px';
+            });
+        }
+    }
+
+    window._dvPreviewFixed = async function () {
+        var body = openOverlay('Preview: Fix paper (aligned to the template)');
+        body.textContent = 'Preparing preview...';
+        try {
+            if (!_dvLastFile) throw new Error('Run a format check first.');
+            if (/\.pdf$/i.test(_dvLastFile.name || '')) throw new Error('Preview works on .docx files only. Upload the Word version.');
+            await new Promise(function (r) { _validatorDeps.ensureJSZip(r); });
+            await loadPreviewLib(); if (window._dvEnsurePagination) window._dvEnsurePagination();
+            if (window._dvFixApiReady) await window._dvFixApiReady;
+
+            var blob = await _dvGenerateFixedDocx(_dvLastFile, _dvLastRules, _dvLastFormattingProfile);
+            body.innerHTML = '';
+            var bar = document.createElement('div');
+            bar.style.cssText = 'margin-bottom:16px;';
+            bar.className='dv-fixed-report';
+            var reportStyle=document.createElement('style');
+            reportStyle.textContent=`
+                .dv-fixed-report details{margin-top:10px;border:1px solid #334155;border-radius:12px;background:#111c2e;color:#e2e8f0;overflow:hidden}
+                .dv-fixed-report summary{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 16px;cursor:pointer;list-style:none;font-size:14px;font-weight:600}
+                .dv-fixed-report summary::-webkit-details-marker{display:none}
+                .dv-fixed-report summary::after{content:'';width:8px;height:8px;border-right:2px solid #94a3b8;border-bottom:2px solid #94a3b8;transform:rotate(45deg);margin-left:auto;flex-shrink:0}
+                .dv-fixed-report details[open]>summary::after{transform:rotate(225deg)}
+                .dv-fixed-report summary:focus-visible{outline:2px solid #93c5fd;outline-offset:-3px}
+                .dv-fixed-report details[open]>summary{border-bottom:1px solid #334155}
+                .dv-fixed-report .dv-report-label{flex:1;min-width:160px;overflow-wrap:anywhere}
+                .dv-fixed-report .dv-report-badges{display:flex;gap:8px;flex-wrap:wrap}
+                .dv-fixed-report .dv-report-badge{padding:4px 9px;border-radius:999px;background:#253348;color:#cbd5e1;font-size:12px;white-space:nowrap;font-weight:500}
+                .dv-fixed-report .dv-report-success{background:#143b2c;color:#86efac}
+                .dv-fixed-report .dv-report-warning{background:#443415;color:#fde68a}
+                .dv-fixed-report details>p{padding:0 16px;line-height:1.65;font-size:13px;overflow-wrap:anywhere;color:#cbd5e1}
+                .dv-fixed-report details>ul{list-style:none;margin:0;padding:12px 16px;max-height:260px;overflow:auto;display:grid;gap:8px;font-size:13px;line-height:1.6}
+                .dv-fixed-report details>ul>li{background:#192638;padding:10px 12px;border-radius:8px;overflow-wrap:anywhere}
+                .dv-fixed-report .dv-template-heading{display:flex;flex-direction:column;gap:4px}
+                .dv-fixed-report .dv-template-heading small{font-size:11px;color:#94a3b8;font-weight:500}
+                .dv-fixed-report .dv-template-heading strong{font-size:15px;line-height:1.4;color:#f8fafc}
+                .dv-fixed-report .dv-template-settings{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;padding:16px;margin:0}
+                .dv-fixed-report .dv-template-settings>div{background:#192638;border:1px solid #29374c;border-radius:9px;padding:11px 12px;min-width:0}
+                .dv-fixed-report .dv-template-settings dt{font-size:11px;color:#94a3b8;margin-bottom:5px}
+                .dv-fixed-report .dv-template-settings dd{margin:0;color:#f1f5f9;font-size:13px;line-height:1.5;overflow-wrap:anywhere}
+                .dv-fixed-report .dv-template-review{margin:0 16px 16px;padding:12px;background:#2c2618;border:1px solid #554324;border-radius:9px;color:#fde68a;font-size:12px;line-height:1.6}
+                .dv-fixed-report .dv-template-review ul{max-height:160px;overflow:auto;margin:8px 0 0;padding-left:18px}
+                @media(max-width:600px){.dv-fixed-report .dv-report-badges{width:100%}.dv-fixed-report summary{gap:8px}}
+            `;
+            bar.appendChild(reportStyle);
+            bar.insertAdjacentHTML('beforeend', '<button type="button" class="btn-modal-close" onclick="window._dvDownloadFixed()">Download this fixed copy</button>');
+            if (blob.formattingReport) {
+                var report = blob.formattingReport;
+                if (report.fixed_validation) {
+                    var validationNote=document.createElement('p');
+                    var remaining=report.fixed_validation.remaining_formatting_issues || [];
+                    validationNote.textContent=remaining.length ? remaining.length+' supported formatting issues remain. See template details before using this copy.' : 'Rechecked corrected copy: no detected spacing, margin or appendix-title issues. Content and manual checks may still require review.';
+                    validationNote.style.cssText='margin:10px 0;font-size:13px;color:'+(remaining.length?'#fbbf24':'#86efac')+';';
+                    bar.appendChild(validationNote);
+                }
+                if (Array.isArray(report.attention_resolutions)) {
+                    var corrections=document.createElement('details');
+                    var corrected=report.attention_resolutions.filter(function(issue){return issue.status==='corrected';});
+                    var unresolved=report.attention_resolutions.filter(function(issue){return issue.status!=='corrected';});
+                    var heading=document.createElement('summary');
+                    var correctionLabel=document.createElement('span');correctionLabel.className='dv-report-label';correctionLabel.textContent='Corrections applied';heading.appendChild(correctionLabel);
+                    var badges=document.createElement('span');badges.className='dv-report-badges';
+                    [[corrected.length+' corrected','dv-report-success'],[unresolved.length+' require review',unresolved.length?'dv-report-warning':'']].forEach(function(entry){var badge=document.createElement('span');badge.className='dv-report-badge '+entry[1];badge.textContent=entry[0];badges.appendChild(badge);});
+                    heading.appendChild(badges);
+                    corrections.appendChild(heading);
+                    var correctionList=document.createElement('ul');
+                    report.attention_resolutions.forEach(function(issue){
+                        var item=document.createElement('li');
+                        item.textContent=(issue.status==='corrected'?'Corrected: ':'Requires review: ')+issue.message;
+                        item.style.color=issue.status==='corrected'?'#86efac':'#fbbf24';
+                        correctionList.appendChild(item);
+                    });
+                    corrections.appendChild(correctionList);
+                    if (!report.attention_resolutions.length) {
+                        var clean=document.createElement('p');clean.textContent='No detected issues in the uploaded paper required correction.';corrections.appendChild(clean);
+                    }
+                    bar.appendChild(corrections);
+                }
+                var summary = document.createElement('details');
+                var title = document.createElement('summary');
+                var templateLabel=document.createElement('span');templateLabel.className='dv-report-label dv-template-heading';
+                var templateCaption=document.createElement('small');templateCaption.textContent='Applied admin template';templateLabel.appendChild(templateCaption);
+                var templateName=document.createElement('strong');templateName.textContent=report.template || 'Selected template';templateLabel.appendChild(templateName);title.appendChild(templateLabel);
+                var processed=document.createElement('span');processed.className='dv-report-badge';processed.textContent=report.paragraphs_processed+' paragraphs processed';title.appendChild(processed);
+                summary.appendChild(title);
+                var settings = report.settings || {};
+                var info=document.createElement('dl');info.className='dv-template-settings';
+                var margins=settings.margins || {};
+                var entries=[['Font',settings.font || 'Original font'],['Font size',settings.size ? settings.size+' pt' : 'Original size'],['Body line spacing',settings.spacing ? settings.spacing+'x' : 'Original spacing'],['Abstract spacing',settings.abstract ? settings.abstract+'x' : 'Same as body']];
+                ['left','right','top','bottom'].forEach(function(side){if(margins[side]!=null)entries.push([side.charAt(0).toUpperCase()+side.slice(1)+' margin',margins[side]+' in']);});
+                entries.forEach(function(entry){var cell=document.createElement('div');var label=document.createElement('dt');label.textContent=entry[0];var value=document.createElement('dd');value.textContent=entry[1];cell.appendChild(label);cell.appendChild(value);info.appendChild(cell);});
+                summary.appendChild(info);
+                if (report.gemini_formatting) {
+                    var aiInfo=document.createElement('p');
+                    aiInfo.textContent='AIDEA interpreted '+(report.gemini_formatting.validated_rules || []).length+' supported formatting instructions from the selected admin checklist. Remaining or unsupported rules require review.';
+                    summary.appendChild(aiInfo);
+                }
+                var remaining=report.manual_review_rules || [];
+                if(remaining.length){
+                    var manual=document.createElement('div');manual.className='dv-template-review';
+                    var reviewTitle=document.createElement('strong');reviewTitle.textContent=remaining.length+' template instructions need manual review';manual.appendChild(reviewTitle);
+                    var reviewList=document.createElement('ul');remaining.forEach(function(rule){var row=document.createElement('li');row.textContent=rule;reviewList.appendChild(row);});manual.appendChild(reviewList);summary.appendChild(manual);
+                }
+                bar.appendChild(summary);
+            }
+            var holder = document.createElement('div');
+            holder.style.cssText = 'background:#6b7280;color:#000;border-radius:6px;overflow:auto;';
+            body.appendChild(bar);
+            body.appendChild(holder);
+            var _dvPrevPg = window._dvPaginateOn; window._dvPaginateOn = true;
+            try { await window.docx.renderAsync(blob, holder, null, { className: 'docx', inWrapper: true, breakPages: true, ignoreLastRenderedPageBreak: false, renderHeaders: true, renderFooters: true }); }
+            finally { window._dvPaginateOn = _dvPrevPg; }
+            holder.querySelectorAll('.docx-wrapper > section.docx').forEach(function (page) {
+                var article=page.querySelector('article');
+                if(article && !(article.textContent || '').trim() && !article.querySelector('img,svg,table,math,canvas,object'))page.remove();
+            });
+            if (window._dvFitFigureCaptions) window._dvFitFigureCaptions(holder);
+            keepCoverDateOnFirstPage(holder);
+            // Show one rendered paper page at a time.
+            var pages = Array.from(holder.querySelectorAll('.docx-wrapper > section.docx'));
+            if (!pages.length) throw new Error('The document renderer did not produce any pages.');
+            // Final rendered-page safeguard: Word properties can be ignored by
+            // the renderer when headings are embedded in a longer paragraph.
+            var topicEnd = /(Theoretical Framework|Conceptual Framework|Statement of the Problem|Significance of the Study|Definition of Terms|Scope and Limitations(?: of the Study)?|Research Design|Method of Research|Research Instrument|Data Gathering Procedure|Data Analysis|Ethical Considerations|Summary of Findings|Conclusions|Recommendations|Introduction)\s*$/i;
+            pages.forEach(function (page, index) {
+                var article = page.querySelector('article');
+                var nextArticle = pages[index + 1] && pages[index + 1].querySelector('article');
+                if (!article || !nextArticle) return;
+                var meaningful = Array.from(article.children).filter(function (node) {
+                    return (node.textContent || '').trim() || node.querySelector('img,svg,table');
+                });
+                var last = meaningful[meaningful.length - 1];
+                if (!last || last.tagName !== 'P' || last.querySelector('img,svg,table') || /^Figure\s*\d+(?:\.\d+)*\s*[.:-]/i.test((last.textContent || '').trim())) return;
+                var raw = last.textContent || '';
+                if (/^(REFERENCES|APPENDICES)$/i.test(raw.trim())) return;
+                // A bold cover date is not a topic heading. Keep it on the cover.
+                if (/^(January|February|March|April|May|June|July|August|September|October|November|December)\b.*\d{4}\.?$/i.test(raw.trim())) return;
+                var match = topicEnd.exec(raw);
+                var allBold = Array.from(last.querySelectorAll('span')).filter(function (span) { return (span.textContent || '').trim(); });
+                var boldHeading = raw.trim().length < 140 && !/[.!?;:]$/.test(raw.trim()) &&
+                    allBold.length > 0 && allBold.every(function (span) {
+                        var weight = getComputedStyle(span).fontWeight;
+                        return weight === 'bold' || Number(weight) >= 600;
+                    });
+                if (!match && !boldHeading) return;
+                var heading = last;
+                if (match && raw.slice(0, match.index).trim()) {
+                    // Split a heading stored after definitions in the same p.
+                    var walker = document.createTreeWalker(last, NodeFilter.SHOW_TEXT);
+                    var offset = match.index, textNode;
+                    while ((textNode = walker.nextNode())) {
+                        if (offset < textNode.textContent.length) break;
+                        offset -= textNode.textContent.length;
+                    }
+                    if (!textNode) return;
+                    var range = document.createRange();
+                    range.setStart(textNode, offset); range.setEnd(last, last.childNodes.length);
+                    heading = last.cloneNode(false);
+                    heading.appendChild(range.extractContents());
+                }
+                // Drop only empty spacers at the start of the destination page.
+                while (nextArticle.firstElementChild && !(nextArticle.firstElementChild.textContent || '').trim() &&
+                    !nextArticle.firstElementChild.querySelector('img,svg,table')) {
+                    nextArticle.firstElementChild.remove();
+                }
+                heading.style.marginTop = '0';
+                nextArticle.insertBefore(heading, nextArticle.firstChild);
+            });
+            // Keep all page boxes in the CSS counter tree. display:none on
+            // earlier pages makes visible lists start again at one.
+            var wrapper = holder.querySelector('.docx-wrapper');
+            var listResets = new Map();
+            pages.forEach(function (page) {
+                var resets = getComputedStyle(page).counterReset || '';
+                var matches = resets.match(/docx-num-[\w-]+(?:\s+-?\d+)?/g) || [];
+                matches.forEach(function (reset) { listResets.set(reset.split(/\s/)[0], reset); });
+                if (matches.length) page.style.setProperty('counter-reset', 'none', 'important');
+                page.querySelectorAll('p').forEach(function (p) {
+                    if (/\bdocx-num-/.test(p.className) && !(p.textContent || '').trim() &&
+                        !p.querySelector('img,svg,math')) {
+                        // docx-preview creates an empty numbered fragment when
+                        // a page marker precedes the list item's first text.
+                        p.style.setProperty('display', 'none', 'important');
+                    }
+                });
+            });
+            if (listResets.size && wrapper) wrapper.style.counterReset = Array.from(listResets.values()).join(' ');
+            var pageCount = document.createElement('p');
+            pageCount.textContent = pages.length + ' pages - scroll down to view each page';
+            pageCount.style.cssText = 'margin:12px 0;color:#cbd5e1;font-size:13px;';
+            body.insertBefore(pageCount, holder);
+            pages.forEach(function (page, index) {
+                page.style.setProperty('display', 'flex', 'important');
+                page.style.position = 'relative';
+                page.style.left = 'auto';
+                page.style.visibility = 'visible';
+                page.style.pointerEvents = 'auto';
+                page.removeAttribute('aria-hidden');
+                page.setAttribute('aria-label', 'Page ' + (index + 1) + ' of ' + pages.length);
+                var label = document.createElement('div');
+                label.textContent = 'Page ' + (index + 1) + ' of ' + pages.length;
+                label.style.cssText = 'color:#f1f5f9;font:13px Arial,sans-serif;margin:6px 0 10px;';
+                page.parentNode.insertBefore(label, page);
+            });
+            function fitPages() {
+                var availableWidth = Math.max(1, holder.clientWidth - 24);
+                pages.forEach(function (page) {
+                    page.style.zoom = '1';
+                    var sheetWidth = page.offsetWidth;
+                    if (sheetWidth > 0) page.style.zoom = String(availableWidth / sheetWidth);
+                });
+            }
+            fitPages();
+            if (window.ResizeObserver) {
+                var pageObserver = new ResizeObserver(function () {
+                    if (!holder.isConnected) { pageObserver.disconnect(); return; }
+                    fitPages();
+                });
+                pageObserver.observe(holder);
+            }
+        } catch (e) {
+            console.warn('[Validator] preview failed', e);
+            body.textContent = 'Could not build the preview: ' + (e && e.message ? e.message : e);
+        }
+    };
+
+    function attentionRules() {
+        return (_dvLastRules || []).filter(function (r) {
+            var ev = _evaluateFormattingRule(r, _dvLastFormattingProfile);
+            return !ev || ev.status !== 'pass';
+        });
+    }
+
+    window._dvPreviewAttention = async function () {
+        var body = openOverlay('Needs attention: redlines and suggestions');
+        var items = [];
+        try { items = attentionRules(); } catch (e) {}
+        var listHtml = items.length
+            ? '<div class="dv-rule-rows">' + items.map(function (r) { return _dvRenderRuleRow(r, _dvLastFormattingProfile); }).join('') + '</div>'
+            : '<div>Nothing needs attention. Your paper meets every rule in this template.</div>';
+        body.innerHTML = listHtml + '<div id="dvRedHolder" style="margin-top:14px;">Preparing redlined preview...</div>';
+        var holder = document.getElementById('dvRedHolder');
+        try {
+            if (!_dvLastFile) throw new Error('Run a format check first.');
+            if (!_dvLastFlatViolations || !_dvLastFlatViolations.length) { holder.innerHTML = '<div style="color:#9ca3af;font-size:13px;">No formatting errors were found, so there are no red notes to show. Please check the items above manually.</div>'; return; } /* DV_NOERR_ATTENTION */
+            var captured = null, capName = '';
+            var orig = _dvTriggerDownload;
+            _dvTriggerDownload = function (b, n) { captured = b; capName = n || ''; };
+            try { await window._dvDownloadRedline(); } finally { _dvTriggerDownload = orig; }
+            if (!captured) throw new Error('No redlined copy was produced.');
+            holder.innerHTML = '';
+            if (/\.pdf$/i.test(capName)) {
+                var fr = document.createElement('iframe');
+                fr.src = URL.createObjectURL(captured);
+                fr.style.cssText = 'width:100%;height:70vh;border:0;background:#fff;';
+                holder.appendChild(fr);
+            } else {
+                await loadPreviewLib();
+                var page = document.createElement('div');
+                page.style.cssText = 'background:#6b7280;color:#000;border-radius:6px;overflow:auto;';
+                holder.appendChild(page);
+                await window.docx.renderAsync(captured, page, null, { className: 'docx', inWrapper: true, renderComments: true, breakPages: true, ignoreLastRenderedPageBreak: false, renderHeaders: true, renderFooters: true });
+            }
+        } catch (e) {
+            console.warn('[Validator] redline preview failed', e);
+            holder.textContent = 'Could not build the redlined preview: ' + (e && e.message ? e.message : e);
+        }
+    };
+    function addButtons() {
+        document.querySelectorAll('.dv-download-row').forEach(function (row) {
+            if (row.getAttribute('data-dv-extra')) return;
+            row.setAttribute('data-dv-extra', '1');
+            var n = 0;
+            try { n = attentionRules().length; } catch (e) {}
+            var b1 = document.createElement('button');
+            b1.type = 'button'; b1.className = 'btn-modal-close';
+            b1.textContent = 'Preview Fix paper';
+            b1.onclick = window._dvPreviewFixed;
+            var b2 = document.createElement('button');
+            b2.type = 'button'; b2.className = 'btn-modal-close';
+            var attention=window._dvAttentionResult;
+            b2.textContent = attention && attention.revision===window._dvFixRevision ? 'Preview Needs attention ('+attention.issues.length+')' : 'Preview Needs attention (checking...)';
+            b2.setAttribute('data-dv-attention', '1');
+            b2.onclick = function () { window._dvPreviewAttention(); };
+            row.appendChild(b1);
+            row.appendChild(b2);
+            /* DV_BUTTONS_TOP: move the button row to the top of the result */
+            try {
+                var hostBody = document.getElementById('docValidationBody');
+                if (hostBody && row.getAttribute('data-dv-top') !== '1') {
+                    row.setAttribute('data-dv-top', '1');
+                    row.style.cssText += ';display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px;position:sticky;top:0;z-index:5;background:#12152a;padding:8px 0;';
+                    hostBody.insertBefore(row, hostBody.firstChild);
+                }
+            } catch (e) {}
+        });
+    }
+
+    function start() {
+        new MutationObserver(addButtons).observe(document.body, { childList: true, subtree: true });
+        addButtons();
+    }
+    if (document.body) start(); else document.addEventListener('DOMContentLoaded', start);
+})();
+/* DV_MISSING_SECTIONS: Needs attention preview lists required sections missing from the paper and marks highlighted text yellow */
+(function () {
+    var W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+    var SECTIONS = [
+        { name: 'Approval Sheet', head: /^APPROVAL SHEET$/, rule: /approval sheet/i },
+        { name: 'Acknowledgement', head: /^ACKNOWLEDGE?MENTS?$/, rule: /acknowledg/i },
+        { name: 'Abstract', head: /^ABSTRACT$/, rule: /abstract/i },
+        { name: 'Table of Contents', head: /^TABLE OF CONTENTS?$/, rule: /table of contents/i },
+        { name: 'List of Tables', head: /^LIST OF TABLES$/, rule: /list of tables/i },
+        { name: 'List of Figures', head: /^LIST OF FIGURES$/, rule: /list of figures/i },
+        { name: 'List of Appendices', head: /^LIST OF APPENDICES$/, rule: /list of appendices/i },
+        { name: 'Chapter 1 (Introduction)', head: /^CHAPTER\s*(1|I|ONE)\b/, rule: /chapter\s*1|introduction/i },
+        { name: 'Theoretical Framework', head: /THEORETICAL FRAMEWORK|PHILOSOPHICAL UNDERPINNING/, rule: /theoretical framework|philosophical underpinning/i },
+        { name: 'Conceptual Framework', head: /CONCEPTUAL FRAMEWORK/, rule: /conceptual framework/i },
+        { name: 'Statement of the Problem', head: /STATEMENT OF THE PROBLEM/, rule: /statement of the problem/i },
+        { name: 'Scope and Limitations', head: /SCOPE AND LIMITATIONS?/, rule: /scope and limitations?/i },
+        { name: 'Significance of the Study', head: /SIGNIFICANCE OF THE STUDY/, rule: /significance of the study/i },
+        { name: 'Definition of Terms', head: /DEFINITION OF TERMS/, rule: /definition of terms/i },
+        { name: 'Chapter 2 (Review of Related Literature)', head: /^CHAPTER\s*(2|II|TWO)\b/, rule: /chapter\s*2|review of related/i },
+        { name: 'Chapter 3 (Methodology)', head: /^CHAPTER\s*(3|III|THREE)\b/, rule: /chapter\s*3|methodology/i },
+        { name: 'Research Instrument', head: /RESEARCH INSTRUMENT/, rule: /research instrument/i },
+        { name: 'Data Gathering Procedure', head: /DATA GATHERING PROCEDURE/, rule: /data gathering procedure/i },
+        { name: 'Data Analysis', head: /^DATA ANALYSIS$/, rule: /data analysis/i },
+        { name: 'Chapter 4 (Presentation, Analysis and Interpretation of Data)', head: /^CHAPTER\s*(4|IV|FOUR)\b/, rule: /chapter\s*4|presentation, analysis/i },
+        { name: 'Chapter 5 (Summary, Conclusions, Recommendations)', head: /^CHAPTER\s*(5|V|FIVE)\b/, rule: /chapter\s*5|summary of findings/i },
+        { name: 'Summary of Findings', head: /SUMMARY OF FINDINGS/, rule: /summary of findings/i },
+        { name: 'Conclusions', head: /^CONCLUSIONS?$/, rule: /conclusions/i },
+        { name: 'Recommendations', head: /^RECOMMENDATIONS?$/, rule: /recommendations/i },
+        { name: 'References', head: /^(REFERENCES|BIBLIOGRAPHY)$/, rule: /references/i },
+        { name: 'Appendices', head: /^APPENDICES$/, rule: /word appendices/i }
+    ];
+
+    var st = document.createElement('style');
+    st.textContent = '#dvPrevOverlay .docx-wrapper section.docx p span[style*="background"]{background-color:#fde047!important;color:#000!important;}';
+    document.head.appendChild(st);
+
+    function norm(t) {
+        return t.replace(/\s+/g, ' ').trim().toUpperCase()
+            .replace(/^(\d+(\.\d+)*[\.\)]?|[A-Z][\.\)]|[IVX]+[\.\)])\s+/, '')
+            .replace(/[:\.\s]+$/, '');
+    }
+
+    async function headings(file) {
+        await new Promise(function (r) { _validatorDeps.ensureJSZip(r); });
+        var zip = await JSZip.loadAsync(file);
+        var xf = zip.file('word/document.xml');
+        if (!xf) return null;
+        var doc = new DOMParser().parseFromString(await xf.async('string'), 'application/xml');
+        var out = [];
+        Array.from(doc.getElementsByTagNameNS(W, 'p')).forEach(function (p) {
+            var text = Array.from(p.getElementsByTagNameNS(W, 't')).map(function (n) { return n.textContent; }).join('');
+            text = text.replace(/\s+/g, ' ').trim();
+            if (!text || text.length > 100) return;
+            var ps = p.getElementsByTagNameNS(W, 'pStyle')[0];
+            var sid = ps ? (ps.getAttributeNS(W, 'val') || ps.getAttribute('w:val') || '') : '';
+            if (/^(TOC|TableofFigures|TableofAuthorities)/i.test(sid)) return;
+            var runTab = Array.from(p.getElementsByTagNameNS(W, 'tab')).some(function (t) { return t.parentNode && t.parentNode.localName === 'r'; });
+            if (runTab && /(\d|[ivxlc]{1,4})$/i.test(text.replace(/\s/g, '')) && !/^CHAPTER/i.test(text)) return;
+            out.push(norm(text));
+        });
+        return out;
+    }
+
+    async function showMissing() {
+        try {
+            var f = _dvLastFile;
+            if (!f || !(f instanceof Blob) || /\.pdf$/i.test(f.name || '')) return;
+            var ruleText = (_dvLastRules || []).map(function (r) { return (r.name || '') + ' ' + (r.detail || ''); }).join(' ');
+            var heads = await headings(f);
+            if (!heads) return;
+            var missing = SECTIONS.filter(function (s) {
+                return s.rule.test(ruleText) && !heads.some(function (h) { return s.head.test(h); });
+            });
+            var holder = document.getElementById('dvRedHolder');
+            if (!missing.length || !holder || !holder.parentNode) return;
+            var old = document.getElementById('dvMissingBox');
+            if (old) old.remove();
+            var box = document.createElement('div');
+            box.id = 'dvMissingBox';
+            box.style.cssText = 'background:#fef08a;color:#422006;border:1px solid #ca8a04;border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:13px;';
+            box.innerHTML = '<strong>Missing from your paper (' + missing.length + ')</strong>' +
+                '<ul style="margin:6px 0 0 18px;padding:0;">' +
+                missing.map(function (m) { return '<li>' + m.name + '</li>'; }).join('') + '</ul>' +
+                '<div style="margin-top:6px;font-size:12px;">Checked by heading text. If a section exists under a different title, rename its heading to match.</div>';
+            holder.parentNode.insertBefore(box, holder.parentNode.firstChild);
+        } catch (e) { console.warn('[Validator] missing-sections check skipped', e); }
+    }
+
+    var orig = window._dvPreviewAttention;
+    if (typeof orig === 'function' && !orig.__dvMiss) {
+        var w = function () {
+            var r = orig.apply(this, arguments);
+            showMissing();
+            return r;
+        };
+        w.__dvMiss = true;
+        window._dvPreviewAttention = w;
+    }
+})();
+/* DV_YELLOW_MARK: redline highlights paragraphs with formatting errors in yellow */
+(function () {
+    try {
+        var AFTER = ['u', 'effect', 'bdr', 'shd', 'fitText', 'vertAlign', 'rtl', 'cs', 'em', 'lang', 'eastAsianLayout', 'specVanish', 'oMath'];
+        _dvApplyHighlight = function (xmlDoc, pEl) {
+            Array.from(pEl.getElementsByTagNameNS(_WORD_NS, 'r')).forEach(function (r) {
+                var rPr = null;
+                for (var c = r.firstChild; c; c = c.nextSibling) {
+                    if (c.nodeType === 1 && c.localName === 'rPr') { rPr = c; break; }
+                }
+                if (!rPr) {
+                    rPr = xmlDoc.createElementNS(_WORD_NS, 'w:rPr');
+                    r.insertBefore(rPr, r.firstChild);
+                }
+                Array.from(rPr.childNodes).forEach(function (c) {
+                    if (c.nodeType === 1 && c.localName === 'highlight') rPr.removeChild(c);
+                });
+                var h = xmlDoc.createElementNS(_WORD_NS, 'w:highlight');
+                h.setAttributeNS(_WORD_NS, 'w:val', 'yellow');
+                var ref = null;
+                for (var k = rPr.firstChild; k; k = k.nextSibling) {
+                    if (k.nodeType === 1 && AFTER.indexOf(k.localName) >= 0) { ref = k; break; }
+                }
+                rPr.insertBefore(h, ref);
+            });
+        };
+    } catch (e) { console.warn('[Validator] yellow marks not installed', e); }
+})();
+/* DV_MANUAL_IN_PAPER: Needs attention preview places each manual-check item under its heading in the paper, in yellow */
+(function () {
+    var W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+    var XMLNS = 'http://www.w3.org/XML/1998/namespace';
+    var KW = [
+        { k: /title page/i, first: true },
+        { k: /approval sheet/i, h: /^APPROVAL SHEET$/ },
+        { k: /acknowledg/i, h: /^ACKNOWLEDGE?MENTS?$/ },
+        { k: /abstract|keywords/i, h: /^ABSTRACT$/ },
+        { k: /table of contents/i, h: /^TABLE OF CONTENTS?$/ },
+        { k: /list of tables/i, h: /^LIST OF TABLES$/ },
+        { k: /list of figures/i, h: /^LIST OF FIGURES$/ },
+        { k: /list of appendices/i, h: /^LIST OF APPENDICES$/ },
+        { k: /theoretical|philosophical/i, h: /THEORETICAL FRAMEWORK|PHILOSOPHICAL UNDERPINNING/ },
+        { k: /conceptual framework|research paradigm/i, h: /CONCEPTUAL FRAMEWORK/ },
+        { k: /statement of the problem|specific objectives/i, h: /STATEMENT OF THE PROBLEM/ },
+        { k: /hypothes/i, h: /HYPOTHES[EI]S/ },
+        { k: /scope and limitations/i, h: /SCOPE AND LIMITATIONS?/ },
+        { k: /significance of the study/i, h: /SIGNIFICANCE OF THE STUDY/ },
+        { k: /definition of terms/i, h: /DEFINITION OF TERMS/ },
+        { k: /research instrument|questionnaire/i, h: /RESEARCH INSTRUMENT/ },
+        { k: /data gathering/i, h: /DATA GATHERING PROCEDURE/ },
+        { k: /data analysis|statistical tools/i, h: /^DATA ANALYSIS$/ },
+        { k: /ethical/i, h: /ETHICAL CONSIDERATIONS?/ },
+        { k: /summary of findings/i, h: /SUMMARY OF FINDINGS/ },
+        { k: /references/i, h: /^(REFERENCES|BIBLIOGRAPHY)$/ },
+        { k: /appendices|appendix/i, h: /^APPENDICES$/ }
+    ];
+    var CH = [
+        [/chapter\s*1|introduction/i, /^CHAPTER\s*(1|I|ONE)\b/],
+        [/chapter\s*2|review of related/i, /^CHAPTER\s*(2|II|TWO)\b/],
+        [/chapter\s*3|methodology/i, /^CHAPTER\s*(3|III|THREE)\b/],
+        [/chapter\s*4|presentation/i, /^CHAPTER\s*(4|IV|FOUR)\b/],
+        [/chapter\s*5|summary of findings/i, /^CHAPTER\s*(5|V|FIVE)\b/]
+    ];
+
+    function norm(t) {
+        return t.replace(/\s+/g, ' ').trim().toUpperCase()
+            .replace(/^(\d+(\.\d+)*[\.\)]?|[A-Z][\.\)]|[IVX]+[\.\)])\s+/, '')
+            .replace(/[:\.\s]+$/, '');
+    }
+    function inTable(p) { for (var n = p.parentNode; n; n = n.parentNode) { if (n.localName === 'tc') return true; } return false; }
+
+    function target(r) {
+        var prefix = String(r.name || '').split(':')[0];
+        var d = String(r.detail || r.name || '');
+        if (/general/i.test(prefix)) return { top: true };
+        var ap = d.match(/\bAppendix\s+([A-K])\b/i);
+        if (ap) return { heads: [new RegExp('^APPENDIX\\s*' + ap[1].toUpperCase() + '\\b'), /^APPENDICES$/] };
+        for (var i = 0; i < KW.length; i++) {
+            if (KW[i].k.test(d)) return KW[i].first ? { first: true } : { heads: [KW[i].h] };
+        }
+        for (var j = 0; j < CH.length; j++) { if (CH[j][0].test(prefix)) return { heads: [CH[j][1]] }; }
+        if (/preliminary/i.test(prefix)) return { first: true };
+        return { top: true };
+    }
+
+    function note(doc, text, bold) {
+        var p = doc.createElementNS(W, 'w:p');
+        var pPr = doc.createElementNS(W, 'w:pPr');
+        var sp = doc.createElementNS(W, 'w:spacing');
+        sp.setAttributeNS(W, 'w:before', '0'); sp.setAttributeNS(W, 'w:after', '40');
+        sp.setAttributeNS(W, 'w:line', '240'); sp.setAttributeNS(W, 'w:lineRule', 'auto');
+        pPr.appendChild(sp);
+        var ind = doc.createElementNS(W, 'w:ind');
+        ind.setAttributeNS(W, 'w:left', '360');
+        pPr.appendChild(ind);
+        p.appendChild(pPr);
+        var r = doc.createElementNS(W, 'w:r');
+        var rPr = doc.createElementNS(W, 'w:rPr');
+        if (bold) rPr.appendChild(doc.createElementNS(W, 'w:b'));
+        rPr.appendChild(doc.createElementNS(W, 'w:i'));
+        var col = doc.createElementNS(W, 'w:color'); col.setAttributeNS(W, 'w:val', '7A5B00'); rPr.appendChild(col);
+        var sz = doc.createElementNS(W, 'w:sz'); sz.setAttributeNS(W, 'w:val', '18'); rPr.appendChild(sz);
+        var szc = doc.createElementNS(W, 'w:szCs'); szc.setAttributeNS(W, 'w:val', '18'); rPr.appendChild(szc);
+        var hl = doc.createElementNS(W, 'w:highlight'); hl.setAttributeNS(W, 'w:val', 'yellow'); rPr.appendChild(hl);
+        r.appendChild(rPr);
+        var t = doc.createElementNS(W, 'w:t');
+        t.setAttributeNS(XMLNS, 'xml:space', 'preserve');
+        t.textContent = text;
+        r.appendChild(t);
+        p.appendChild(r);
+        return p;
+    }
+    function yellow(doc, p) {
+        var AFTER = ['u', 'effect', 'bdr', 'shd', 'fitText', 'vertAlign', 'rtl', 'cs', 'em', 'lang', 'eastAsianLayout', 'specVanish', 'oMath'];
+        Array.from(p.getElementsByTagNameNS(W, 'r')).forEach(function (r) {
+            var rPr = null;
+            for (var c = r.firstChild; c; c = c.nextSibling) { if (c.nodeType === 1 && c.localName === 'rPr') { rPr = c; break; } }
+            if (!rPr) { rPr = doc.createElementNS(W, 'w:rPr'); r.insertBefore(rPr, r.firstChild); }
+            Array.from(rPr.childNodes).forEach(function (c) { if (c.nodeType === 1 && c.localName === 'highlight') rPr.removeChild(c); });
+            var h = doc.createElementNS(W, 'w:highlight'); h.setAttributeNS(W, 'w:val', 'yellow');
+            var ref = null;
+            for (var k = rPr.firstChild; k; k = k.nextSibling) { if (k.nodeType === 1 && AFTER.indexOf(k.localName) >= 0) { ref = k; break; } }
+            rPr.insertBefore(h, ref);
+        });
+    }
+
+    function loadLib() {
+        if (window.docx && window.docx.renderAsync) return Promise.resolve();
+        var urls = ['https://cdn.jsdelivr.net/npm/docx-preview@0.3.2/dist/docx-preview.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/docx-preview/0.3.2/docx-preview.min.js'];
+        var i = 0;
+        function next() {
+            if (i >= urls.length) return Promise.reject(new Error('Preview library could not load.'));
+            return new Promise(function (res, rej) {
+                var s = document.createElement('script');
+                s.src = urls[i++]; s.onload = res; s.onerror = function () { s.remove(); rej(); };
+                document.head.appendChild(s);
+            }).then(function () { if (!(window.docx && window.docx.renderAsync)) throw new Error('bad'); }).catch(next);
+        }
+        return next();
+    }
+
+    async function build() {
+        var file = _dvLastFile;
+        if (!file || /\.pdf$/i.test(file.name || '')) return;
+        var items = (_dvLastRules || []).filter(function (r) {
+            var ev = _evaluateFormattingRule(r, _dvLastFormattingProfile);
+            return !ev || ev.status === 'manual';
+        });
+        var holder = document.getElementById('dvRedHolder');
+        if (!items.length || !holder) return;
+
+        var ab;
+        var viol = _dvLastFlatViolations || [];
+        if (viol.length) {
+            var byP = new Map();
+            viol.forEach(function (v) {
+                if (v.index == null) return;
+                var n = v.ruleName + ': expected ' + v.target + (v.unit ? ' ' + v.unit : '') + ', found ' + v.actual;
+                if (!byP.has(v.index)) byP.set(v.index, []);
+                byP.get(v.index).push(n);
+            });
+            ab = byP.size ? await (await _dvGenerateRedlinedDocx(file, byP)).arrayBuffer() : await _resolveArrayBuffer(file);
+        } else {
+            ab = await _resolveArrayBuffer(file);
+        }
+        var zip = await JSZip.loadAsync(ab);
+        var xf = zip.file('word/document.xml');
+        if (!xf) return;
+        var doc = new DOMParser().parseFromString(await xf.async('string'), 'application/xml');
+        var body = doc.getElementsByTagNameNS(W, 'body')[0];
+        if (!body) return;
+
+        var paras = [];
+        Array.from(doc.getElementsByTagNameNS(W, 'p')).forEach(function (p) {
+            if (inTable(p)) return;
+            var text = Array.from(p.getElementsByTagNameNS(W, 't')).map(function (n) { return n.textContent; }).join('').replace(/\s+/g, ' ').trim();
+            if (!text || text.length > 100) return;
+            var ps = p.getElementsByTagNameNS(W, 'pStyle')[0];
+            var sid = ps ? (ps.getAttributeNS(W, 'val') || ps.getAttribute('w:val') || '') : '';
+            if (/^(TOC|TableofFigures)/i.test(sid)) return;
+            var runTab = Array.from(p.getElementsByTagNameNS(W, 'tab')).some(function (t) { return t.parentNode && t.parentNode.localName === 'r'; });
+            if (runTab && /(\d|[ivxlc]{1,4})$/i.test(text.replace(/\s/g, '')) && !/^CHAPTER/i.test(text)) return;
+            paras.push({ p: p, t: norm(text) });
+        });
+
+        var groups = new Map(), top = [], placed = 0;
+        items.forEach(function (r) {
+            var tg = target(r), anchor = null;
+            if (tg.first && paras.length) anchor = paras[0].p;
+            else if (tg.heads) {
+                for (var i = 0; i < tg.heads.length && !anchor; i++) {
+                    var m = paras.filter(function (x) { return tg.heads[i].test(x.t); })[0];
+                    if (m) anchor = m.p;
+                }
+            }
+            var txt = '\u2022 ' + (r.detail || r.name);
+            if (anchor) { if (!groups.has(anchor)) groups.set(anchor, []); groups.get(anchor).push(txt); placed++; }
+            else top.push(txt);
+        });
+
+        groups.forEach(function (arr, p) {
+            yellow(doc, p);
+            var ref = p.nextSibling;
+            arr.forEach(function (t) { p.parentNode.insertBefore(note(doc, t), ref); });
+        });
+        if (top.length) {
+            var first = body.firstChild;
+            body.insertBefore(note(doc, 'General checks and items for sections not found (verify manually): ' + top.length, true), first);
+            top.forEach(function (t) { body.insertBefore(note(doc, t), first); });
+        }
+
+        zip.file('word/document.xml', new XMLSerializer().serializeToString(doc));
+        var blob = await zip.generateAsync({ type: 'blob' });
+        await loadLib();
+        holder.innerHTML = '<div style="margin-bottom:8px;font-size:12px;color:#9ca3af;">Yellow notes in the paper mark ' + items.length + ' items to verify manually.</div>';
+        var page = document.createElement('div');
+        page.style.cssText = 'background:#6b7280;color:#000;border-radius:6px;overflow:auto;';
+        holder.appendChild(page);
+        await window.docx.renderAsync(blob, page, null, { className: 'docx', inWrapper: true, renderComments: true, breakPages: true, ignoreLastRenderedPageBreak: false, renderHeaders: true, renderFooters: true });
+    }
+
+    var orig = window._dvPreviewAttention;
+    if (typeof orig === 'function' && !orig.__dvManual) {
+        var w = async function () {
+            try { await orig.apply(this, arguments); } catch (e) { }
+            try { await build(); } catch (e) { console.warn('[Validator] manual items not placed in paper', e); }
+        };
+        w.__dvManual = true;
+        window._dvPreviewAttention = w;
+    }
+})();
+
+/* DV_TEMPLATE_APPLY: apply the values written in the selected template's rules to the fixed paper */
+(function () {
+    if (typeof _dvGenerateFixedDocx !== 'function') return;
+    var W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+    var PPR = ['pStyle','keepNext','keepLines','pageBreakBefore','framePr','widowControl','numPr','suppressLineNumbers','pBdr','shd','tabs','suppressAutoHyphens','kinsoku','wordWrap','overflowPunct','topLinePunct','autoSpaceDE','autoSpaceDN','bidi','adjustRightInd','snapToGrid','spacing','ind','contextualSpacing','mirrorIndents','suppressOverlap','jc','textDirection','textAlignment','textboxTightWrap','outlineLvl','divId','cnfStyle','rPr','sectPr','pPrChange'];
+    var RPR = ['rStyle','rFonts','b','bCs','i','iCs','caps','smallCaps','strike','dstrike','outline','shadow','emboss','imprint','noProof','snapToGrid','vanish','webHidden','color','spacing','w','kern','position','sz','szCs','highlight','u','effect','bdr','shd','fitText','vertAlign','rtl','cs','em','lang','eastAsianLayout','specVanish','oMath'];
+    var SECT = ['headerReference','footerReference','footnotePr','endnotePr','type','pgSz','pgMar','paperSrc','pgBorders','lnNumType','pgNumType','cols','formProt','vAlign','noEndnote','titlePg','textDirection','bidi','rtlGutter','docGrid'];
+    var FIRST_HEAD = /^(APPROVAL SHEET|ACKNOWLEDGEMENTS?|ABSTRACT|TABLE OF CONTENTS|LIST OF TABLES|LIST OF FIGURES|LIST OF APPENDICES|CHAPTER\s*\d|INTRODUCTION)/;
+    var HEAD_END = /^(TABLE OF CONTENTS|LIST OF TABLES|LIST OF FIGURES|LIST OF APPENDICES|CHAPTER\s*\d|INTRODUCTION|ACKNOWLEDGEMENTS?)/;
+
+    function kid(parent, name) {
+        for (var c = parent.firstChild; c; c = c.nextSibling) {
+            if (c.nodeType === 1 && c.localName === name && c.namespaceURI === W) return c;
+        }
+        return null;
+    }
+    function ensure(doc, parent, order, name) {
+        var e = kid(parent, name);
+        if (e) return e;
+        e = doc.createElementNS(W, 'w:' + name);
+        var idx = order.indexOf(name), ref = null;
+        for (var c = parent.firstChild; c; c = c.nextSibling) {
+            if (c.nodeType === 1 && c.namespaceURI === W && order.indexOf(c.localName) > idx) { ref = c; break; }
+        }
+        parent.insertBefore(e, ref);
+        return e;
+    }
+    function setA(el, n, v) { el.setAttributeNS(W, 'w:' + n, String(v)); }
+    function ptext(p) {
+        return Array.from(p.getElementsByTagNameNS(W, 't')).map(function (n) { return n.textContent; }).join('').trim();
+    }
+    function inTable(p) {
+        for (var n = p.parentNode; n; n = n.parentNode) { if (n.localName === 'tbl' && n.namespaceURI === W) return true; }
+        return false;
+    }
+
+    function parseRules(rules) {
+        var cfg = { body: null, abs: null, top: null, bottom: null, left: null, right: null, font: null, size: null, hanging: false, heads: {} };
+        (rules || []).forEach(function (r) {
+            var d = String((r && (r.detail || r.name)) || ''), m;
+            var hw = /\bword\s+(REFERENCES|APPENDICES)\b/i.exec(d);
+            if (hw) {
+                var h = { size: null, center: /cent/i.test(d), bold: /\bbold\b/i.test(d), caps: /capital/i.test(d) };
+                if ((m = /font size\s*(\d+(?:\.\d+)?)/i.exec(d))) h.size = parseFloat(m[1]);
+                cfg.heads[hw[1].toUpperCase()] = h;
+                return;
+            }
+            if (/spac/i.test(d)) {
+                var v = null;
+                if (/double[- ]?spac/i.test(d)) v = 2;
+                else if (/single[- ]?spac/i.test(d)) v = 1;
+                else if ((m = /\b(1\.5|2(?:\.0)?)\s*(?:line\s*)?spac/i.exec(d))) v = parseFloat(m[1]);
+                if (v !== null) {
+                    if (/abstract/i.test(d)) { if (cfg.abs === null) cfg.abs = v; }
+                    else if (cfg.body === null) cfg.body = v;
+                }
+            }
+            if (/margin/i.test(d)) {
+                if ((m = /left\s*([\d.]+)/i.exec(d))) cfg.left = parseFloat(m[1]);
+                if ((m = /right\s*([\d.]+)/i.exec(d))) cfg.right = parseFloat(m[1]);
+                if ((m = /top\s*and\s*bottom\s*([\d.]+)/i.exec(d))) { cfg.top = cfg.bottom = parseFloat(m[1]); }
+                else {
+                    if ((m = /top\s*([\d.]+)/i.exec(d))) cfg.top = parseFloat(m[1]);
+                    if ((m = /bottom\s*([\d.]+)/i.exec(d))) cfg.bottom = parseFloat(m[1]);
+                }
+            }
+            if ((m = /font (?:style|name|family)\b.*?\bis\s+([A-Za-z][A-Za-z ]*?)\s*\.?\s*$/i.exec(d))) cfg.font = m[1];
+            if ((m = /font size\b.*?\bis\s+(\d+(?:\.\d+)?)/i.exec(d))) cfg.size = parseFloat(m[1]);
+            if (/hanging inden/i.test(d)) cfg.hanging = true;
+        });
+        var any = cfg.body !== null || cfg.abs !== null || cfg.left !== null || cfg.right !== null || cfg.top !== null ||
+            cfg.bottom !== null || cfg.font || cfg.size !== null || cfg.hanging || Object.keys(cfg.heads).length;
+        return any ? cfg : null;
+    }
+
+    var prev = _dvGenerateFixedDocx;
+    _dvGenerateFixedDocx = async function (file, rules, formattingProfile) {
+        var blob = await prev(file, rules, formattingProfile);
+        try {
+            if ((rules || []).some(function (r) { return r && (r.id === 'checklist-spacing' || r.id === 'checklist-margin'); })) return blob;
+            var cfg = parseRules(rules);
+            if (!cfg) return blob;
+            if (!window.JSZip) await new Promise(function (res) { _validatorDeps.ensureJSZip(res); });
+            var zip = await JSZip.loadAsync(await blob.arrayBuffer());
+            var xf = zip.file('word/document.xml');
+            if (!xf) return blob;
+            var doc = new DOMParser().parseFromString(await xf.async('string'), 'application/xml');
+
+            var zone = 'front';
+            Array.from(doc.getElementsByTagNameNS(W, 'p')).forEach(function (p) {
+                var t = ptext(p), up = t.toUpperCase(), tbl = inTable(p), kind = 'body', head = null;
+                if (!tbl && t && t.length <= 60) {
+                    if (up === 'ABSTRACT') { zone = 'abstract'; kind = 'head'; }
+                    else if (up === 'REFERENCES' || up === 'APPENDICES') { zone = up === 'REFERENCES' ? 'references' : 'appendices'; kind = 'big'; head = cfg.heads[up] || null; }
+                    else if (zone !== 'appendices' && HEAD_END.test(up)) { zone = 'body'; }
+                    else if (zone === 'front' && FIRST_HEAD.test(up)) { zone = 'body'; }
+                }
+                var pPr = kid(p, 'pPr');
+                if (!pPr) { pPr = doc.createElementNS(W, 'w:pPr'); p.insertBefore(pPr, p.firstChild); }
+
+                if (!tbl && t) {
+                    var lineMult = null;
+                    if (kind === 'big') { lineMult = null; }
+                    else if (zone === 'abstract' && kind !== 'head') { lineMult = cfg.abs; }
+                    else if (zone === 'body' || zone === 'references' || zone === 'abstract') { lineMult = cfg.body; }
+                    if (lineMult !== null) {
+                        var sp = ensure(doc, pPr, PPR, 'spacing');
+                        setA(sp, 'line', Math.round(lineMult * 240));
+                        setA(sp, 'lineRule', 'auto');
+                    }
+                    if (kind === 'big' && head && head.center) setA(ensure(doc, pPr, PPR, 'jc'), 'val', 'center');
+                    if (kind === 'big' && head && head.caps) {
+                        Array.from(p.getElementsByTagNameNS(W, 't')).forEach(function (n) { n.textContent = n.textContent.toUpperCase(); });
+                    }
+                    if (cfg.hanging && zone === 'references' && kind === 'body') {
+                        var ind = ensure(doc, pPr, PPR, 'ind');
+                        ind.removeAttributeNS(W, 'firstLine');
+                        setA(ind, 'left', 720);
+                        setA(ind, 'hanging', 720);
+                    }
+                }
+
+                Array.from(p.getElementsByTagNameNS(W, 'r')).forEach(function (r) {
+                    var rPr = kid(r, 'rPr');
+                    if (!rPr) { rPr = doc.createElementNS(W, 'w:rPr'); r.insertBefore(rPr, r.firstChild); }
+                    if (cfg.font) {
+                        var f = ensure(doc, rPr, RPR, 'rFonts');
+                        ['asciiTheme', 'hAnsiTheme', 'cstheme', 'eastAsiaTheme'].forEach(function (a) { f.removeAttributeNS(W, a); });
+                        ['ascii', 'hAnsi', 'cs', 'eastAsia'].forEach(function (a) { setA(f, a, cfg.font); });
+                    }
+                    var size = (kind === 'big' && head && head.size) ? head.size : cfg.size;
+                    if (size) {
+                        setA(ensure(doc, rPr, RPR, 'sz'), 'val', Math.round(size * 2));
+                        setA(ensure(doc, rPr, RPR, 'szCs'), 'val', Math.round(size * 2));
+                    }
+                    if (kind === 'big' && head && head.bold) {
+                        var b = ensure(doc, rPr, RPR, 'b'); b.removeAttributeNS(W, 'val');
+                    }
+                });
+            });
+
+            Array.from(doc.getElementsByTagNameNS(W, 'sectPr')).forEach(function (s) {
+                if (cfg.left !== null || cfg.right !== null || cfg.top !== null || cfg.bottom !== null) {
+                    var mar = ensure(doc, s, SECT, 'pgMar');
+                    if (cfg.top !== null) setA(mar, 'top', Math.round(cfg.top * 1440));
+                    if (cfg.bottom !== null) setA(mar, 'bottom', Math.round(cfg.bottom * 1440));
+                    if (cfg.left !== null) setA(mar, 'left', Math.round(cfg.left * 1440));
+                    if (cfg.right !== null) setA(mar, 'right', Math.round(cfg.right * 1440));
+                }
+            });
+
+            zip.file('word/document.xml', new XMLSerializer().serializeToString(doc));
+            console.log('[Validator] template rules applied to fixed paper', cfg);
+            return await zip.generateAsync({ type: 'blob' });
+        } catch (e) {
+            console.warn('[Validator] template apply skipped', e);
+            return blob;
+        }
+    };
+})();
+/* DV_FIXPAPER_LOADER */
+(function () {
+    var s = document.currentScript;
+    var base = (s && s.src) ? s.src.replace(/[^\/]*$/, '') : '';
+    var e = document.createElement('script');
+    e.src = base + 'fixpaper-api.js?v=30';
+    window._dvFixApiReady = new Promise(function (resolve, reject) {
+        e.onload = resolve;
+        e.onerror = function () { reject(new Error('The paper formatting API client could not load. Refresh the page.')); };
+    });
+    window._dvFixApiReady.catch(function () {});
+    document.head.appendChild(e);
+})();
