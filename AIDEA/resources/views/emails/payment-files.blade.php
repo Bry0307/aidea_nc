@@ -17,7 +17,7 @@
 
   <tr><td style="background:#0a1a3f;padding:24px 32px;">
     <table role="presentation" cellpadding="0" cellspacing="0"><tr>
-      <td width="36" height="36" align="center" style="background:#ffffff;border-radius:9px;"><img src="https://aideanc-production.up.railway.app/images/email-logo.png" alt="AIDEA" width="30" height="30" style="display:block;margin:0 auto;border:0;outline:none;"></td>
+      <td width="36" height="36" align="center" style="background:#FFC72C;color:#0a1a3f;font-weight:bold;font-size:18px;border-radius:9px;">A</td>
       <td style="padding-left:12px;">
         <div style="color:#ffffff;font-size:17px;font-weight:bold;letter-spacing:1px;">AIDEA</div>
         <div style="color:#9fb0d6;font-size:11px;margin-top:2px;">Norzagaray College Research Platform</div>
@@ -67,7 +67,7 @@
     @php
       $__p = data_get($__f, 'path', is_string($__f) ? $__f : null);
     @endphp
-    @if (false)
+    @if ($__p && preg_match('/\.(jpe?g|png|webp)$/i', $__p))
       <img src="{{ $message->embed(\Illuminate\Support\Facades\Storage::disk('public')->path($__p)) }}" alt="Certificate" style="display:block;width:100%;max-width:520px;height:auto;margin:16px 0;border-radius:8px;border:1px solid #e5e7eb;">
     @endif
   @endforeach
@@ -76,7 +76,7 @@
   @endif
 
   <tr><td style="padding:22px 32px 30px;">
-    <p style="margin:0;font-size:13px;line-height:1.7;color:#5f6d8c;">You will also see this in your AIDEA Requests.</p>
+    <p style="margin:0;font-size:13px;line-height:1.7;color:#5f6d8c;">You will also see this in your AIDEA notifications.</p>
   </td></tr>
 
   <tr><td style="background:#f8f9fd;border-top:1px solid #e2e7f1;padding:16px 32px;text-align:center;">

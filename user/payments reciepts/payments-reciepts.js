@@ -1,10 +1,10 @@
 // payments-reciepts.js — Student side
 // Same shell behavior as dashboard.js / avail-services.js (session, theme,
 // drawer, profile menu, sign-out modal) plus:
-//   - Payment history table, read from GET /api/payments?student=<name>
+//   - Requests history table, read from GET /api/payments?student=<name>
 //     (Status: Pending | Paid | Rejected)
 //   - "My certificates & files" — whatever the admin has sent for a
-//     completed payment, read from GET /api/certificates -> { <payment_id>:
+//     Completed requests, read from GET /api/certificates -> { <payment_id>:
 //     { url, name, type } }. type is 'certificate' or 'files'; older
 //     records without a type are treated as a certificate.
 //   - Receipt modal with print.
@@ -246,7 +246,7 @@ function renderPayments() {
     });
 
     if (!payments.length) {
-        tbody.innerHTML = '<tr><td colspan="7" class="empty">No payments yet. Avail a service to get started.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="empty">No requests yet. Avail a service to get started.</td></tr>';
     } else if (!filtered.length) {
         tbody.innerHTML = '<tr><td colspan="7" class="empty">No payments match your filter.</td></tr>';
     } else {
@@ -357,21 +357,59 @@ function certPreview(p) {
             <strong>PDF</strong><span>${escHtml(c.name)}</span></button>`;
     }
     return `<button type="button" class="cert-preview" data-view="${p.id}">
-        <img src="${escHtml(c.url)}" alt="${escHtml(certKind(c))}" loading="lazy" /></button>`;
+        <img src="${escHtml(secureUrl(c.url))}" alt="${escHtml(certKind(c))}" loading="lazy" /></button>`;
+}
+
+let certTab = 'files';
+let certTabTouched = false;
+let certTabsWired = false;
+
+function certTypeOf(p) { return p.certificate && p.certificate.type === 'files' ? 'files' : 'certificate'; }
+
+function wireCertTabs() {
+    if (certTabsWired) return;
+    const wrap = document.getElementById('certTabs');
+    if (!wrap) return;
+    certTabsWired = true;
+    wrap.addEventListener('click', e => {
+        const b = e.target.closest('.cert-tab');
+        if (!b) return;
+        certTab = b.dataset.tab;
+        certTabTouched = true;
+        renderCertificates();
+    });
 }
 
 function renderCertificates() {
     const grid = document.getElementById('certGrid');
     if (!grid) return;
+    wireCertTabs();
     grid.setAttribute('aria-busy', 'false');
 
-    if (!certItems.length) {
-        grid.innerHTML = `<div class="cert-empty"><strong>Nothing here yet</strong>
-            <div>Certificates or completed files will appear here once the admin sends them.</div></div>`;
+    const certs = certItems.filter(p => certTypeOf(p) === 'certificate');
+    const files = certItems.filter(p => certTypeOf(p) === 'files');
+
+    if (!certTabTouched && certTab === 'certificate' && !certs.length && files.length) certTab = 'files';
+
+    const cc = document.getElementById('certCountCert');
+    const cf = document.getElementById('certCountFiles');
+    if (cc) cc.textContent = certs.length;
+    if (cf) cf.textContent = files.length;
+    document.querySelectorAll('#certTabs .cert-tab').forEach(b => {
+        b.classList.toggle('active', b.dataset.tab === certTab);
+        b.setAttribute('aria-selected', b.dataset.tab === certTab ? 'true' : 'false');
+    });
+
+    const list = certTab === 'files' ? files : certs;
+
+    if (!list.length) {
+        const isFiles = certTab === 'files';
+        grid.innerHTML = `<div class="cert-empty"><strong>${isFiles ? 'No files yet' : 'No certificates yet'}</strong>
+            <div>${isFiles ? 'Completed files' : 'Certificates'} will appear here once the admin sends them.</div></div>`;
         return;
     }
 
-    grid.innerHTML = certItems.map((p, i) => `
+    grid.innerHTML = list.map((p, i) => `
         <div class="receipt-card" style="animation-delay:${i * 0.04}s">
             <div class="rc-header">
                 <span class="rc-no">${certNo(p.id)}</span>
@@ -391,24 +429,30 @@ function renderCertificates() {
         </div>
     `).join('');
 }
+function secureUrl(u) {
+    return String(u || '').replace(/^http:\/\/(?=[^\/]*\.up\.railway\.app)/i, 'https://');
+}
 
-async function downloadCert(id) {
+function downloadCert(id) {
     const p = certItems.find(x => x.id === id);
     if (!p) return;
+    const c = p.certificate;
+    const url = secureUrl(c.url);
+    let href = url;
     try {
-        const res = await fetch(p.certificate.url);
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const blob = await res.blob();
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = p.certificate.name;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-    } catch {
-        window.open(p.certificate.url, '_blank', 'noopener');
-    }
+        const u = new URL(url);
+        const m = u.pathname.match(/\/storage\/payment-files\/(.+)$/);
+        if (m) {
+            const segs = decodeURIComponent(m[1]).split('/').map(encodeURIComponent).join('/');
+            const base = decodeURIComponent(u.pathname.split('/').pop());
+            href = u.origin + '/api/download/payment-files/' + segs + '?name=' + encodeURIComponent(c.name || base);
+        }
+    } catch (e) { }
+    const a = document.createElement('a');
+    a.href = href;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
 }
 
 function viewCert(id) {
@@ -433,8 +477,8 @@ function viewCert(id) {
             </div>
             <div class="cert-viewer-media">
                 ${isPdf(c)
-            ? `<iframe src="${escHtml(c.url)}" title="${escHtml(certKind(c))}"></iframe>`
-            : `<img src="${escHtml(c.url)}" alt="${escHtml(certKind(c))}" />`}
+            ? `<iframe src="${escHtml(secureUrl(c.url))}" title="${escHtml(certKind(c))}"></iframe>`
+            : `<img src="${escHtml(secureUrl(c.url))}" alt="${escHtml(certKind(c))}" />`}
             </div>
             <div class="cert-viewer-actions">
                 <button class="modal-btn modal-btn-cancel" data-close="1" type="button">Close</button>

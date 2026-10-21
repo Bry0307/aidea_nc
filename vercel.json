@@ -1,9 +1,5 @@
 {
-  "buildCommand": "mkdir -p public && cp -r user admin public/ && cp AIDEA/public/favicon.ico public/favicon.ico",
+  "buildCommand": "mkdir -p public && cp -r user admin public/",
   "outputDirectory": "public",
-  "redirects": [{ "source": "/", "destination": "/user/landing/index.html", "permanent": false }],
-  "rewrites": [
-    { "source": "/api/:path*", "destination": "https://aideanc-production-84b5.up.railway.app/api/:path*" },
-    { "source": "/storage/:path*", "destination": "https://aideanc-production-84b5.up.railway.app/storage/:path*" }
-  ]
+  "redirects": [{ "source": "/", "destination": "/user/landing/index.html", "permanent": false }]
 }

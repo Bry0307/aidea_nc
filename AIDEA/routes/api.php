@@ -18,7 +18,6 @@ use App\Http\Controllers\Student\FeedbackController as StudentFeedbackController
 
 
 
-
 /* -- Public routes (no token needed) -- */
 Route::post('/login', [AuthController::class, 'login']);
 
@@ -30,8 +29,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // -- Dashboard --
     Route::get('/dashboard/stats', [DashboardController::class, 'stats']);
-    Route::get('/dashboard/thesis-by-year', [DashboardController::class, 'thesisByYear']);
-    Route::get('/dashboard/thesis-by-year-month', [DashboardController::class, 'thesisByYearMonth']);
 
     // -- Submissions --
     Route::get('/submissions', [SubmissionController::class, 'index']);
@@ -128,7 +125,7 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::patch('feedbacks/{feedback}/read', [AdminFeedbackController::class, 'markRead']);
     Route::delete('feedbacks/{feedback}', [AdminFeedbackController::class, 'destroy']);
 
-    // Dashboard stats ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â matches the /api/admin/stats URL dashboard.js calls
+    // Dashboard stats ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â matches the /api/admin/stats URL dashboard.js calls
     // Uses adminStats() (aggregated across all students), NOT stats()
     // (which is scoped to the logged-in user and would show zeros for an admin)
     Route::get('stats', [DashboardController::class, 'adminStats']);
@@ -137,7 +134,6 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::get('assignments', [App\Http\Controllers\Admin\AssignmentController::class, 'index']);
     Route::post('assignments', [App\Http\Controllers\Admin\AssignmentController::class, 'store']);
     Route::get('assignments/{id}/download', [App\Http\Controllers\Admin\AssignmentController::class, 'download']);
-    Route::delete('assignments/{id}', [App\Http\Controllers\Admin\AssignmentController::class, 'destroy']);
 
     // AIDEA_ADMIN_ACCOUNT_ROUTES
     // Manage Account (admin's own profile + password)
@@ -176,128 +172,4 @@ Route::middleware(['auth:sanctum', 'reviewer'])->prefix('reviewer')->group(funct
     Route::get('assignments', [App\Http\Controllers\Reviewer\AssignmentController::class, 'index']);
     Route::post('assignments/{id}/complete', [App\Http\Controllers\Reviewer\AssignmentController::class, 'complete']);
     Route::post('assignments/{id}/resend', [App\Http\Controllers\Reviewer\AssignmentController::class, 'resend']);
-    Route::get('assignments/{id}/file/{n?}', [App\Http\Controllers\Reviewer\AssignmentController::class, 'file'])->where(['id' => '[0-9]+', 'n' => '[0-9]+']);
 });
-
-// My Profile routes
-require __DIR__ . '/profile.php';
-
-// Forces a real download for files in storage/assignments (File Transfer > Download)
-\Illuminate\Support\Facades\Route::get('/download/assignments/{file}', function (\Illuminate\Http\Request $request, string $file) {
-    $file = basename($file);
-    $path = 'assignments/' . $file;
-    $disk = \Illuminate\Support\Facades\Storage::disk('public');
-    abort_unless($disk->exists($path), 404);
-    $name = preg_replace('/[^\w\s.\-()]/u', '', (string) $request->query('name', $file));
-    if ($name === '' || $name === null) { $name = $file; }
-    return response()->download($disk->path($path), $name);
-})->where('file', '[A-Za-z0-9._\-]+');
-
-// Forces a real download for payment files and certificates (student Requests & Certificate)
-\Illuminate\Support\Facades\Route::get('/download/payment-files/{path}', function (\Illuminate\Http\Request $request, string $path) {
-    abort_if(str_contains($path, '..'), 404);
-    $rel = 'payment-files/' . ltrim($path, '/');
-    $disk = \Illuminate\Support\Facades\Storage::disk('public');
-    abort_unless($disk->exists($rel), 404);
-    $name = preg_replace('/[^\w\s.\-()]/u', '', (string) $request->query('name', basename($rel)));
-    if ($name === '' || $name === null) { $name = basename($rel); }
-    return response()->download($disk->path($rel), $name);
-})->where('path', '.+');
-
-// Format templates shared between admin and students (stored as one JSON list)
-Route::post('/papers/ai-check', [\App\Http\Controllers\GeminiPaperReviewController::class, 'store'])
-    ->middleware(['auth:sanctum', 'throttle:3,1']);
-Route::post('/papers/check-and-fix', [\App\Http\Controllers\GeminiPaperReviewController::class, 'checkAndFix'])
-    ->middleware(['auth:sanctum', 'throttle:3,1']);
-Route::post('/papers/fix', [\App\Http\Controllers\PaperFormattingController::class, 'store'])
-    ->middleware(['auth:sanctum', 'throttle:10,1']);
-Route::get('/format-templates/{templateId}/formatting', [\App\Http\Controllers\PaperFormattingController::class, 'show'])
-    ->middleware('auth:sanctum');
-
-\Illuminate\Support\Facades\Route::get('/format-templates', function () {
-    $row = \Illuminate\Support\Facades\DB::table('format_templates')->orderBy('id')->first();
-    return response()->json($row ? json_decode($row->data, true) : []);
-})->middleware('auth:sanctum');
-\Illuminate\Support\Facades\Route::put('/format-templates', function (\Illuminate\Http\Request $request) {
-    $list = $request->input('templates', []);
-    abort_unless(is_array($list), 422);
-    $json = json_encode(array_values($list));
-    $row = \Illuminate\Support\Facades\DB::table('format_templates')->orderBy('id')->first();
-    if ($row) {
-        \Illuminate\Support\Facades\DB::table('format_templates')->where('id', $row->id)->update(['data' => $json, 'updated_at' => now()]);
-    } else {
-        \Illuminate\Support\Facades\DB::table('format_templates')->insert(['data' => $json, 'created_at' => now(), 'updated_at' => now()]);
-    }
-    return response()->json(['ok' => true]);
-})->middleware(['auth:sanctum', 'admin']);
-
-// Certificate templates (admin): reference images shown in Generate certificate
-\Illuminate\Support\Facades\Route::middleware(['auth:sanctum', 'admin'])->prefix('certificate-templates')->group(function () {
-    \Illuminate\Support\Facades\Route::get('/', function () {
-        return response()->json(\Illuminate\Support\Facades\DB::table('certificate_templates')->orderByDesc('id')->get(['id', 'name', 'created_at']));
-    });
-    \Illuminate\Support\Facades\Route::post('/', function (\Illuminate\Http\Request $request) {
-        $data = $request->validate([
-            'name'  => 'required|string|max:120',
-            'image' => 'required|file|mimes:png,jpg,jpeg,webp|max:10240',
-            'fields' => 'nullable|string|max:20000',
-            'original' => 'nullable|file|max:20480',
-        ]);
-        $file = $request->file('image');
-        $mime = $file->getMimeType();
-        $ext  = strtolower($file->getClientOriginalExtension() ?: 'png');
-        $path = $file->storeAs('certificate-templates', uniqid('tpl_') . '.' . $ext, 'public');
-        $id = \Illuminate\Support\Facades\DB::table('certificate_templates')->insertGetId([
-            'name' => $data['name'], 'path' => $path, 'mime' => $mime, 'created_at' => now(), 'updated_at' => now(),
-        ]);
-        if (!empty($data['fields']) && \Illuminate\Support\Facades\Schema::hasColumn('certificate_templates', 'fields')) { \Illuminate\Support\Facades\DB::table('certificate_templates')->where('id', $id)->update(['fields' => $data['fields']]); }
-        if ($request->hasFile('original') && \Illuminate\Support\Facades\Schema::hasColumn('certificate_templates', 'original_path')) {
-            $of = $request->file('original');
-            $oext = strtolower($of->getClientOriginalExtension());
-            if ($oext === 'docx') {
-                $opath = $of->storeAs('certificate-templates', uniqid('orig_') . '.docx', 'public');
-                \Illuminate\Support\Facades\DB::table('certificate_templates')->where('id', $id)->update(['original_path' => $opath, 'original_name' => substr($of->getClientOriginalName(), 0, 250)]);
-            }
-        }
-        return response()->json(['ok' => true, 'id' => $id], 201);
-    });
-    \Illuminate\Support\Facades\Route::get('/{id}/image', function ($id) {
-        $row = \Illuminate\Support\Facades\DB::table('certificate_templates')->where('id', $id)->first();
-        abort_unless($row, 404);
-        $disk = \Illuminate\Support\Facades\Storage::disk('public');
-        abort_unless($disk->exists($row->path), 404);
-        return response()->json(['image' => 'data:' . ($row->mime ?: 'image/png') . ';base64,' . base64_encode($disk->get($row->path)), 'fields' => json_decode((string) ($row->fields ?? ''), true)]);
-    })->whereNumber('id');
-    \Illuminate\Support\Facades\Route::put('/{id}/fields', function (\Illuminate\Http\Request $request, $id) {
-    $data = $request->validate(['fields' => 'required|string|max:20000']);
-    abort_unless(\Illuminate\Support\Facades\DB::table('certificate_templates')->where('id', $id)->exists(), 404);
-    abort_unless(\Illuminate\Support\Facades\Schema::hasColumn('certificate_templates', 'fields'), 409);
-    \Illuminate\Support\Facades\DB::table('certificate_templates')->where('id', $id)->update(['fields' => $data['fields'], 'updated_at' => now()]);
-    return response()->json(['ok' => true]);
-})->whereNumber('id');
-    \Illuminate\Support\Facades\Route::get('/{id}/original', function ($id) {
-        $row = \Illuminate\Support\Facades\DB::table('certificate_templates')->where('id', $id)->first();
-        abort_unless($row && !empty($row->original_path), 404);
-        $disk = \Illuminate\Support\Facades\Storage::disk('public');
-        abort_unless($disk->exists($row->original_path), 404);
-        return response($disk->get($row->original_path), 200, ['Content-Type' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']);
-    })->whereNumber('id');
-    \Illuminate\Support\Facades\Route::delete('/{id}', function ($id) {
-        $row = \Illuminate\Support\Facades\DB::table('certificate_templates')->where('id', $id)->first();
-        abort_unless($row, 404);
-        \Illuminate\Support\Facades\Storage::disk('public')->delete($row->path);
-        if (!empty($row->original_path)) { \Illuminate\Support\Facades\Storage::disk('public')->delete($row->original_path); }
-        \Illuminate\Support\Facades\DB::table('certificate_templates')->where('id', $id)->delete();
-        return response()->json(['ok' => true]);
-    })->whereNumber('id');
-});
-
-
-// -- Pricing sheet (Excel upload shown to students) --
-Route::get('/pricing-sheet', [\App\Http\Controllers\PricingSheetController::class, 'show'])->middleware('auth:sanctum');
-Route::post('/pricing-sheet', [\App\Http\Controllers\PricingSheetController::class, 'store'])->middleware(['auth:sanctum', 'admin']);
-Route::delete('/pricing-sheet', [\App\Http\Controllers\PricingSheetController::class, 'destroy'])->middleware(['auth:sanctum', 'admin']);
-Route::post('/docx/format', [App\Http\Controllers\DocxFormatController::class, 'format'])->middleware('throttle:20,1');
-
-// --- Word -> PDF for the certificate editor ---
-\Illuminate\Support\Facades\Route::middleware(['auth:sanctum', 'admin'])->post('/certificates/docx-to-pdf', [\App\Http\Controllers\DocxPdfController::class, 'convert']);

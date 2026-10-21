@@ -24,7 +24,7 @@ class PaymentController extends Controller
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'gcash_ref' => 'required_unless:method,Free|nullable|digits:13',
+            'gcash_ref' => 'required_unless:method,Free|nullable|string|min:6',
             'service' => 'required|string',
             'service_id' => 'nullable|integer',
             'student_id' => 'nullable|string',
@@ -56,7 +56,7 @@ class PaymentController extends Controller
 
     public function approve(Payment $payment)
     {
-        $payment->update(['status' => 'Ongoing']);
+        $payment->update(['status' => 'Paid']);
         return response()->json($payment);
     }
 
@@ -77,7 +77,7 @@ class PaymentController extends Controller
             'type'    => 'required|in:files,certificate',
             'message' => 'nullable|string|max:1000',
             'files'   => 'required|array|min:1|max:10',
-            'files.*' => 'file|mimes:pdf,jpg,jpeg,png,webp,docx|max:20480',
+            'files.*' => 'file|mimes:pdf,jpg,jpeg,png,webp|max:5120',
         ]);
 
         $student = $payment->user ?? \App\Models\User::find($payment->user_id ?? null);
@@ -99,38 +99,26 @@ class PaymentController extends Controller
             ];
 
             if (!$firstUrl) {
-                $firstUrl = preg_replace('#^http://#i', 'https://', Storage::disk('public')->url($stored));
+                $firstUrl = Storage::disk('public')->url($stored);
                 $firstName = $f->getClientOriginalName();
             }
         }
 
         $payment->update([
-            'status'           => 'Paid',
             'certificate_url'  => $firstUrl,
             'certificate_name' => $firstName,
             'certificate_type' => $data['type'],
         ]);
 
-        $mailOk = $this->safeNotify($student, new \App\Notifications\PaymentFilesSent(
+        $student->notify(new \App\Notifications\PaymentFilesSent(
             $payment, $data['type'], $paths, $data['message'] ?? null
         ));
 
-        return response()->json(['ok' => true, 'mail' => $mailOk, 'certificate' => [
+        return response()->json(['ok' => true, 'certificate' => [
             'url'  => $firstUrl,
             'name' => $firstName,
             'type' => $data['type'],
         ]]);
-    }
-
-    private function safeNotify($user, $notification): bool
-    {
-        try {
-            $user->notify($notification);
-            return true;
-        } catch (\Throwable $e) {
-            report($e);
-            return false;
-        }
     }
 
     public function certificates()
@@ -139,7 +127,7 @@ class PaymentController extends Controller
             ->get(['id', 'certificate_url', 'certificate_name', 'certificate_type'])
             ->mapWithKeys(function ($p) {
                 return [$p->id => [
-                    'url'  => preg_replace('#^http://#i', 'https://', (string) $p->certificate_url),
+                    'url'  => $p->certificate_url,
                     'name' => $p->certificate_name,
                     'type' => $p->certificate_type,
                 ]];

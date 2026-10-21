@@ -1151,3 +1151,68 @@ td.empty {
     clip: rect(0 0 0 0);
     white-space: nowrap;
 }
+/* DASH-SPACING-OVERRIDE start */
+.content { max-width: none !important; width: 100%; box-sizing: border-box; padding: 32px clamp(20px, 3vw, 48px); }
+.content > * { max-width: none !important; box-sizing: border-box; }
+.content > section, .content > div { width: 100%; }
+.page-head { margin-bottom: 28px; }
+.stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; width: 100%; margin-bottom: 28px; }
+.stat { padding: 28px 30px; }
+@media (max-width: 900px) { .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .stat-grid { grid-template-columns: 1fr; gap: 16px; } .content { padding: 20px 16px; } }
+/* DASH-PANEL-SPACING */
+.bottom-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; width: 100%; max-width: none !important; box-sizing: border-box; }
+.panel { width: 100%; max-width: none !important; box-sizing: border-box; }
+.panel-head { margin-bottom: 20px; }
+.table-wrap { width: 100%; overflow-x: auto; }
+.table-wrap table { width: 100%; }
+@media (min-width: 769px) {
+  .panel { padding: 28px 32px; }
+  thead th, tbody td { padding: 16px 18px; }
+  td.empty { padding: 56px 18px; text-align: center; }
+}
+/* DASH-SPACING-OVERRIDE end */
+
+/* DASH-VIEW-V1: details modal (matches My Submissions) */
+.modal-wide { width: min(640px, 94vw); max-width: 94vw; text-align: left; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.modal-head .modal-title { margin: 0; text-align: left; }
+.detail-list { display: grid; grid-template-columns: 160px 1fr; gap: 10px 16px; margin: 0; }
+.detail-list dt { font-size: 12px; font-weight: 600; opacity: .65; }
+.detail-list dd { margin: 0; word-break: break-word; }
+.remarks { margin-top: 16px; padding: 12px 14px; border-radius: 10px; background: rgba(128,128,128,.1); }
+.remarks h4 { margin: 0 0 6px; }
+.remarks p { margin: 0; }
+@media (max-width: 520px) { .detail-list { grid-template-columns: 1fr; gap: 2px; } .detail-list dd { margin-bottom: 10px; } }
+
+/* DASH-VIEW-V2: tidy close button + title in the details modal */
+.modal-head { align-items: flex-start; }
+.modal-head .modal-title { flex: 1; min-width: 0; font-size: 17px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.modal-head .icon-btn { flex: none; align-self: flex-start; width: 32px; height: 32px; min-width: 32px; padding: 0; margin: 0; display: inline-grid; place-items: center; border-radius: 50%; cursor: pointer; }
+.modal-head .icon-btn svg { width: 16px; height: 16px; }
+
+/* DASH-VIEW-V3: no duplicate heading, close button stays top-right */
+#modalOverlay .modal-head { justify-content: flex-end; margin-bottom: 8px; }
+#modalOverlay .modal-title[hidden] { display: none; }
+
+/* DASH-RESP-V1: mobile fixes for recent list and details modal */
+.title-wrap { min-width: 0; overflow-wrap: anywhere; }
+.title-type { display: block; margin-top: 2px; font-size: 12px; font-weight: 400; opacity: .65; }
+#modalOverlay .modal-wide { max-height: 90vh; overflow-y: auto; box-sizing: border-box; }
+#modalOverlay .detail-list dd,
+#modalOverlay #modalBody a { overflow-wrap: anywhere; word-break: break-word; }
+@media (max-width: 520px) {
+  #modalOverlay .modal-wide { width: calc(100vw - 24px); max-width: calc(100vw - 24px); padding: 16px; }
+  #modalOverlay .detail-list { grid-template-columns: 1fr; gap: 2px; }
+  #modalOverlay .detail-list dd { margin-bottom: 10px; }
+  #thesis-tbody .title-wrap { text-align: right; }
+}
+
+/* DASH-RESP-V2: stacked, clamped title in the recent list on phones */
+@media (max-width: 720px) {
+  #thesis-tbody td[data-label="Title"] { display: block; text-align: left; }
+  #thesis-tbody td[data-label="Title"]::before { display: block; margin-bottom: 6px; }
+  #thesis-tbody .title-wrap { text-align: left; }
+  #thesis-tbody .title-wrap strong { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  #thesis-tbody .title-type { text-align: left; }
+}

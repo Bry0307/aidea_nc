@@ -15,8 +15,7 @@ class StudentController extends Controller
         $students = User::where('is_admin', 0)
             ->whereNull('archived_at')
             ->orderBy('created_at', 'desc')
-            ->get(['id', 'fname', 'lname', 'mi', 'email', 'is_verified', 'role', 'created_at', 'avatar_path'])
-            ->each->append('avatar_url');
+            ->get(['id', 'fname', 'lname', 'mi', 'email', 'is_verified', 'created_at']);
 
         return response()->json($students);
     }
@@ -82,8 +81,7 @@ class StudentController extends Controller
         $students = User::where('is_admin', 0)
             ->whereNotNull('archived_at')
             ->orderBy('archived_at', 'desc')
-            ->get(['id', 'fname', 'lname', 'mi', 'email', 'is_verified', 'role', 'created_at', 'archived_at', 'avatar_path'])
-            ->each->append('avatar_url');
+            ->get(['id', 'fname', 'lname', 'mi', 'email', 'is_verified', 'role', 'created_at', 'archived_at', 'avatar_path']);
 
         return response()->json($students);
     }

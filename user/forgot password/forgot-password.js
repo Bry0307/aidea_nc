@@ -1,23 +1,11 @@
-// forgot-password.js
-// Matches the 4-panel forgot-password.html (Request → Code → New Password → Success).
-// Same theme persistence + API base pattern as dashboard.js.
-//
-// Assumed backend routes (adjust the paths below if yours differ):
-//   POST /forgot-password        { email }
-//   POST /verify-reset-code      { email, code }
-//   POST /reset-password         { email, code, password, password_confirmation }
-
 document.addEventListener('DOMContentLoaded', () => {
 
     const API_BASE = 'https://aideanc-production-84b5.up.railway.app/api';
-    const LOGIN_URL = '../login/login.html';
     const THEME_KEY = 'aidea_user_theme';
-    const RESEND_SECONDS = 60;
 
     /* ── STATE ── */
     let submittedEmail = '';
-    let resetCodeValue = '';
-    let resendIntervalId = null;
+    let resendCountdown = null;
 
     /* ── PANELS ── */
     const panelRequest     = document.getElementById('panelRequest');
@@ -25,25 +13,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const panelNewPassword = document.getElementById('panelNewPassword');
     const panelSuccess     = document.getElementById('panelSuccess');
 
-    function showPanel(panel) {
-        [panelRequest, panelCode, panelNewPassword, panelSuccess].forEach(p => {
-            if (p) p.style.display = (p === panel) ? '' : 'none';
-        });
-    }
-
     /* ── STEP 1 ELEMENTS ── */
-    const forgotForm      = document.getElementById('forgotForm');
-    const resetEmailEl    = document.getElementById('resetEmail');
-    const errResetEmail   = document.getElementById('errResetEmail');
-    const resetBtn        = document.getElementById('resetBtn');
-    const resetBtnText    = document.getElementById('resetBtnText');
-    const resetBtnSpinner = document.getElementById('resetBtnSpinner');
+    const forgotForm     = document.getElementById('forgotForm');
+    const resetEmailEl   = document.getElementById('resetEmail');
+    const resetBtn       = document.getElementById('resetBtn');
+    const resetBtnText   = document.getElementById('resetBtnText');
+    const resetBtnSpinner= document.getElementById('resetBtnSpinner');
 
     /* ── STEP 2 ELEMENTS ── */
-    const sentEmailDisplay = document.getElementById('sentEmailDisplay');
+    const sentEmailDisplay  = document.getElementById('sentEmailDisplay');
     const codeForm          = document.getElementById('codeForm');
     const resetCodeEl       = document.getElementById('resetCode');
-    const errResetCode      = document.getElementById('errResetCode');
     const verifyBtn         = document.getElementById('verifyBtn');
     const verifyBtnText     = document.getElementById('verifyBtnText');
     const verifyBtnSpinner  = document.getElementById('verifyBtnSpinner');
@@ -55,18 +35,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const backToEmail       = document.getElementById('backToEmail');
 
     /* ── STEP 3 ELEMENTS ── */
-    const newPasswordForm        = document.getElementById('newPasswordForm');
-    const newPasswordEl          = document.getElementById('newPassword');
-    const errNewPassword         = document.getElementById('errNewPassword');
-    const confirmPasswordEl      = document.getElementById('confirmPassword');
-    const errConfirmPassword     = document.getElementById('errConfirmPassword');
-    const savePasswordBtn        = document.getElementById('savePasswordBtn');
-    const savePasswordBtnText    = document.getElementById('savePasswordBtnText');
-    const savePasswordBtnSpinner = document.getElementById('savePasswordBtnSpinner');
+    const newPasswordForm       = document.getElementById('newPasswordForm');
+    const newPasswordEl         = document.getElementById('newPassword');
+    const confirmPasswordEl     = document.getElementById('confirmPassword');
+    const savePasswordBtn       = document.getElementById('savePasswordBtn');
+    const savePasswordBtnText   = document.getElementById('savePasswordBtnText');
+    const savePasswordBtnSpinner= document.getElementById('savePasswordBtnSpinner');
 
-    /* ══════════════════════════════════════════════════
+    /* ════════════════════════════════════
        THEME (light / dark) — same pattern as dashboard.js
-    ══════════════════════════════════════════════════ */
+    ════════════════════════════════════ */
     const currentTheme = () => document.documentElement.getAttribute('data-theme') || 'light';
 
     function applyTheme(theme, persist) {
@@ -91,213 +69,258 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!saved) applyTheme(e.matches ? 'dark' : 'light', false);
         });
     }
+    initTheme();
 
-    /* ══════════════════════════════════════════════════
-       TOAST — uses the .toast / .toast.error classes
-       already defined in forgot-password.css (#toastWrap)
-    ══════════════════════════════════════════════════ */
-    function showToast(msg, type = 'success') {
-        const wrap = document.getElementById('toastWrap');
-        if (!wrap) return;
-        const t = document.createElement('div');
-        t.className = 'toast' + (type === 'error' ? ' error' : '');
-        t.textContent = msg;
-        wrap.appendChild(t);
-        setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 250); }, 3200);
-    }
+    /* ════════════════════════════════════
+       STEP 1 — SEND CODE
+    ════════════════════════════════════ */
+    forgotForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        if (!validateEmail()) return;
 
-    /* ══════════════════════════════════════════════════
-       VALIDATION HELPERS
-    ══════════════════════════════════════════════════ */
-    const isValidEmail = v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
-    const isValidCode  = v => /^\d{6}$/.test(v);
+        submittedEmail = resetEmailEl.value.trim();
+        setLoading(resetBtn, resetBtnText, resetBtnSpinner, true);
 
-    function setError(inputEl, errEl, msg) {
-        if (!inputEl || !errEl) return;
-        if (msg) {
-            inputEl.classList.add('has-error');
-            errEl.textContent = msg;
-        } else {
-            inputEl.classList.remove('has-error');
-            errEl.textContent = '';
+        try {
+            const res = await fetch(`${API_BASE}/forgot-password`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({ email: submittedEmail }),
+            });
+
+            const data = await res.json();
+
+            if (data.success) {
+                sentEmailDisplay.textContent = submittedEmail;
+                showPanel('code');
+                startResendTimer();
+                showToast('Reset code sent! Check your inbox.', 'success');
+            } else {
+                showError('errResetEmail', data.message || 'Failed to send reset code.');
+            }
+        } catch (err) {
+            showError('errResetEmail', 'Server error. Please try again.');
+            console.error(err);
+        } finally {
+            setLoading(resetBtn, resetBtnText, resetBtnSpinner, false);
         }
-    }
+    });
 
-    function setButtonLoading(btn, textEl, spinnerEl, loading, loadingLabel, idleLabel) {
-        if (!btn) return;
-        btn.disabled = loading;
-        if (spinnerEl) spinnerEl.style.display = loading ? '' : 'none';
-        if (textEl) textEl.textContent = loading ? loadingLabel : idleLabel;
-    }
+    /* ════════════════════════════════════
+       STEP 2 — VERIFY CODE
+    ════════════════════════════════════ */
+    codeForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        clearError('errResetCode');
 
-    /* ══════════════════════════════════════════════════
-       API CALLS
-    ══════════════════════════════════════════════════ */
-    async function postJSON(path, body) {
-        const res = await fetch(`${API_BASE}${path}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify(body),
-        });
-        const contentType = res.headers.get('content-type') ?? '';
-        const data = contentType.includes('application/json') ? await res.json() : {};
-        if (!res.ok) {
-            throw new Error(data.message || 'Something went wrong. Please try again.');
+        const code = resetCodeEl.value.trim();
+        if (!code || code.length !== 6 || !/^\d{6}$/.test(code)) {
+            showError('errResetCode', 'Please enter the 6-digit code from your email.');
+            resetCodeEl.focus();
+            return;
         }
-        return data;
+
+        setLoading(verifyBtn, verifyBtnText, verifyBtnSpinner, true);
+
+        try {
+            const res = await fetch(`${API_BASE}/verify-reset-code`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({ email: submittedEmail, code }),
+            });
+
+            const data = await res.json();
+
+            if (data.success) {
+                showPanel('newPassword');
+                showToast('Code verified! Set your new password.', 'success');
+            } else {
+                showError('errResetCode', data.message || 'Invalid code. Please try again.');
+            }
+        } catch (err) {
+            showError('errResetCode', 'Server error. Please try again.');
+            console.error(err);
+        } finally {
+            setLoading(verifyBtn, verifyBtnText, verifyBtnSpinner, false);
+        }
+    });
+
+    /* ── Only allow digits in code input ── */
+    resetCodeEl.addEventListener('input', () => {
+        resetCodeEl.value = resetCodeEl.value.replace(/\D/g, '');
+        clearError('errResetCode');
+    });
+
+    /* ── RESEND BUTTON ── */
+    resendBtn.addEventListener('click', async () => {
+        setLoading(resendBtn, resendBtnText, resendBtnSpinner, true);
+
+        try {
+            const res = await fetch(`${API_BASE}/forgot-password`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({ email: submittedEmail }),
+            });
+
+            const data = await res.json();
+
+            if (data.success) {
+                showToast('Reset code resent to ' + submittedEmail, 'success');
+                startResendTimer();
+                resetCodeEl.value = '';
+            } else {
+                showToast(data.message || 'Failed to resend.', 'error');
+            }
+        } catch (err) {
+            showToast('Server error. Please try again.', 'error');
+            console.error(err);
+        } finally {
+            setLoading(resendBtn, resendBtnText, resendBtnSpinner, false);
+        }
+    });
+
+    /* ── BACK TO EMAIL ── */
+    backToEmail.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (resendCountdown) clearInterval(resendCountdown);
+        resetCodeEl.value = '';
+        clearError('errResetCode');
+        showPanel('request');
+    });
+
+    /* ════════════════════════════════════
+       STEP 3 — RESET PASSWORD
+    ════════════════════════════════════ */
+    newPasswordForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        clearError('errNewPassword');
+        clearError('errConfirmPassword');
+
+        const password = newPasswordEl.value;
+        const confirm  = confirmPasswordEl.value;
+
+        if (password.length < 8) {
+            showError('errNewPassword', 'Password must be at least 8 characters.');
+            newPasswordEl.focus();
+            return;
+        }
+        if (password !== confirm) {
+            showError('errConfirmPassword', 'Passwords do not match.');
+            confirmPasswordEl.focus();
+            return;
+        }
+
+        setLoading(savePasswordBtn, savePasswordBtnText, savePasswordBtnSpinner, true);
+
+        try {
+            const res = await fetch(`${API_BASE}/reset-password`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({
+                    email: submittedEmail,
+                    code: resetCodeEl.value.trim(),
+                    password: password,
+                    password_confirmation: confirm,
+                }),
+            });
+
+            const data = await res.json();
+
+            if (data.success) {
+                showPanel('success');
+                showToast('Password reset successfully!', 'success');
+            } else {
+                showError('errNewPassword', data.message || 'Failed to reset password.');
+            }
+        } catch (err) {
+            showError('errNewPassword', 'Server error. Please try again.');
+            console.error(err);
+        } finally {
+            setLoading(savePasswordBtn, savePasswordBtnText, savePasswordBtnSpinner, false);
+        }
+    });
+
+    /* ════════════════════════════════════
+       HELPERS
+    ════════════════════════════════════ */
+    function showPanel(name) {
+        panelRequest.style.display     = name === 'request'     ? 'block' : 'none';
+        panelCode.style.display        = name === 'code'        ? 'block' : 'none';
+        panelNewPassword.style.display = name === 'newPassword' ? 'block' : 'none';
+        panelSuccess.style.display     = name === 'success'     ? 'block' : 'none';
     }
 
-    /* ══════════════════════════════════════════════════
-       RESEND COOLDOWN TIMER
-    ══════════════════════════════════════════════════ */
-    function startResendCooldown() {
-        let remaining = RESEND_SECONDS;
+    function startResendTimer() {
         resendBtn.disabled = true;
-        resendTimer.style.display = '';
-        timerCount.textContent = remaining;
-
-        clearInterval(resendIntervalId);
-        resendIntervalId = setInterval(() => {
-            remaining -= 1;
-            timerCount.textContent = remaining;
-            if (remaining <= 0) {
-                clearInterval(resendIntervalId);
+        resendTimer.style.display = 'block';
+        let seconds = 60;
+        timerCount.textContent = seconds;
+        if (resendCountdown) clearInterval(resendCountdown);
+        resendCountdown = setInterval(() => {
+            seconds--;
+            timerCount.textContent = seconds;
+            if (seconds <= 0) {
+                clearInterval(resendCountdown);
                 resendBtn.disabled = false;
                 resendTimer.style.display = 'none';
             }
         }, 1000);
     }
 
-    /* ══════════════════════════════════════════════════
-       STEP 1 — Request reset code
-    ══════════════════════════════════════════════════ */
-    function initStep1() {
-        forgotForm?.addEventListener('submit', async e => {
-            e.preventDefault();
-            const email = resetEmailEl.value.trim();
-
-            if (!email) { setError(resetEmailEl, errResetEmail, 'Please enter your email address.'); return; }
-            if (!isValidEmail(email)) { setError(resetEmailEl, errResetEmail, 'Enter a valid email address.'); return; }
-            setError(resetEmailEl, errResetEmail, null);
-
-            setButtonLoading(resetBtn, resetBtnText, resetBtnSpinner, true, 'Sending…', 'Send reset code');
-            try {
-                await postJSON('/forgot-password', { email });
-                submittedEmail = email;
-                sentEmailDisplay.textContent = email;
-                showPanel(panelCode);
-                startResendCooldown();
-                showToast('Reset code sent. Check your inbox.');
-            } catch (err) {
-                showToast(err.message || 'Could not send reset code.', 'error');
-            } finally {
-                setButtonLoading(resetBtn, resetBtnText, resetBtnSpinner, false, 'Sending…', 'Send reset code');
-            }
-        });
-
-        resetEmailEl?.addEventListener('input', () => setError(resetEmailEl, errResetEmail, null));
+    function validateEmail() {
+        clearError('errResetEmail');
+        resetEmailEl.classList.remove('error');
+        const val = resetEmailEl.value.trim();
+        if (!val) {
+            showError('errResetEmail', 'Email address is required');
+            resetEmailEl.classList.add('error');
+            resetEmailEl.focus();
+            return false;
+        }
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val)) {
+            showError('errResetEmail', 'Please enter a valid email address');
+            resetEmailEl.classList.add('error');
+            resetEmailEl.focus();
+            return false;
+        }
+        return true;
     }
 
-    /* ══════════════════════════════════════════════════
-       STEP 2 — Verify code
-    ══════════════════════════════════════════════════ */
-    function initStep2() {
-        codeForm?.addEventListener('submit', async e => {
-            e.preventDefault();
-            const code = resetCodeEl.value.trim();
+    resetEmailEl.addEventListener('input', () => {
+        if (resetEmailEl.classList.contains('error')) {
+            clearError('errResetEmail');
+            resetEmailEl.classList.remove('error');
+        }
+    });
+    resetEmailEl.addEventListener('blur', () => validateEmail());
 
-            if (!code) { setError(resetCodeEl, errResetCode, 'Please enter the 6-digit code.'); return; }
-            if (!isValidCode(code)) { setError(resetCodeEl, errResetCode, 'Enter the 6-digit code exactly as sent.'); return; }
-            setError(resetCodeEl, errResetCode, null);
-
-            setButtonLoading(verifyBtn, verifyBtnText, verifyBtnSpinner, true, 'Verifying…', 'Verify code');
-            try {
-                await postJSON('/verify-reset-code', { email: submittedEmail, code });
-                resetCodeValue = code;
-                showPanel(panelNewPassword);
-            } catch (err) {
-                setError(resetCodeEl, errResetCode, err.message || 'Invalid or expired code.');
-            } finally {
-                setButtonLoading(verifyBtn, verifyBtnText, verifyBtnSpinner, false, 'Verifying…', 'Verify code');
-            }
-        });
-
-        resetCodeEl?.addEventListener('input', () => setError(resetCodeEl, errResetCode, null));
-
-        resendBtn?.addEventListener('click', async () => {
-            setButtonLoading(resendBtn, resendBtnText, resendBtnSpinner, true, 'Resending…', 'Resend code');
-            try {
-                await postJSON('/forgot-password', { email: submittedEmail });
-                showToast('Code resent.');
-                startResendCooldown();
-            } catch (err) {
-                showToast(err.message || 'Could not resend code.', 'error');
-            } finally {
-                setButtonLoading(resendBtn, resendBtnText, resendBtnSpinner, false, 'Resending…', 'Resend code');
-            }
-        });
-
-        backToEmail?.addEventListener('click', e => {
-            e.preventDefault();
-            clearInterval(resendIntervalId);
-            resetCodeEl.value = '';
-            setError(resetCodeEl, errResetCode, null);
-            showPanel(panelRequest);
-        });
+    function showError(id, msg) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = msg;
     }
 
-    /* ══════════════════════════════════════════════════
-       STEP 3 — Set new password
-    ══════════════════════════════════════════════════ */
-    function initStep3() {
-        newPasswordForm?.addEventListener('submit', async e => {
-            e.preventDefault();
-            const pw = newPasswordEl.value;
-            const confirm = confirmPasswordEl.value;
-            let hasError = false;
-
-            if (!pw || pw.length < 8) {
-                setError(newPasswordEl, errNewPassword, 'Password must be at least 8 characters.');
-                hasError = true;
-            } else {
-                setError(newPasswordEl, errNewPassword, null);
-            }
-
-            if (!confirm || confirm !== pw) {
-                setError(confirmPasswordEl, errConfirmPassword, 'Passwords do not match.');
-                hasError = true;
-            } else {
-                setError(confirmPasswordEl, errConfirmPassword, null);
-            }
-
-            if (hasError) return;
-
-            setButtonLoading(savePasswordBtn, savePasswordBtnText, savePasswordBtnSpinner, true, 'Saving…', 'Save new password');
-            try {
-                await postJSON('/reset-password', {
-                    email: submittedEmail,
-                    code: resetCodeValue,
-                    password: pw,
-                    password_confirmation: confirm,
-                });
-                showPanel(panelSuccess);
-            } catch (err) {
-                showToast(err.message || 'Could not update password.', 'error');
-            } finally {
-                setButtonLoading(savePasswordBtn, savePasswordBtnText, savePasswordBtnSpinner, false, 'Saving…', 'Save new password');
-            }
-        });
-
-        newPasswordEl?.addEventListener('input', () => setError(newPasswordEl, errNewPassword, null));
-        confirmPasswordEl?.addEventListener('input', () => setError(confirmPasswordEl, errConfirmPassword, null));
+    function clearError(id) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = '';
     }
 
-    /* ══════════════════════════════════════════════════
-       BOOT
-    ══════════════════════════════════════════════════ */
-    initTheme();
-    initStep1();
-    initStep2();
-    initStep3();
-    showPanel(panelRequest);
+    function setLoading(btn, textEl, spinnerEl, on) {
+        btn.disabled = on;
+        textEl.style.display = on ? 'none' : 'inline';
+        spinnerEl.style.display = on ? 'inline-block' : 'none';
+    }
+
+    function showToast(msg, type = 'info') {
+        const wrap = document.getElementById('toastWrap');
+        const t = document.createElement('div');
+        t.className = `toast ${type}`;
+        t.textContent = msg;
+        wrap.appendChild(t);
+        setTimeout(() => {
+            t.style.transition = 'opacity 0.3s';
+            t.style.opacity = '0';
+            setTimeout(() => t.remove(), 300);
+        }, 3200);
+    }
+
 });

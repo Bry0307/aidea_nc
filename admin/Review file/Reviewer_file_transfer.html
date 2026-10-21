@@ -28,6 +28,8 @@
         rel="stylesheet" />
     <link rel="stylesheet" href="../dashboard/dashboard.css" />
     <link rel="stylesheet" href="Reviewer_file_transfer.css" />
+    <link rel="icon" type="image/png" sizes="32x32" href="../shared/logo-32.png" />
+    <link rel="apple-touch-icon" href="../shared/logo-180.png" />
 </head>
 
 <body>
@@ -36,15 +38,7 @@
          new File Transfer entry added under "Review" -->
     <aside class="sidebar" id="sidebar" aria-label="Main navigation">
         <a class="sidebar-brand" href="../thesis reviewer/Thesis_reviewer.html" aria-label="AIDEA Admin home">
-            <span class="brand-mark" aria-hidden="true">
-                <svg viewBox="0 0 32 32" width="32" height="32" fill="none">
-                    <rect width="32" height="32" rx="9" fill="#FFC72C" />
-                    <path d="M9 22.5 16 8l7 14.5" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round"
-                        stroke-linejoin="round" />
-                    <path d="M11.8 18h8.4" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round" />
-                    <circle cx="16" cy="8" r="1.9" fill="#2563eb" />
-                </svg>
-            </span>
+            <span class="brand-mark" aria-hidden="true"><img src="../shared/logo-64.png" alt="" width="32" height="32" style="display:block;object-fit:contain"></span>
             <span class="brand-text">
                 <span class="brand-name">AIDEA Admin</span>
                 <span class="brand-sub">Norzagaray College</span>
@@ -183,16 +177,17 @@
                         </div>
 
                         <div class="field">
-                            <label for="sendFile">Attach your reviewed / corrected file (optional)</label>
+                            <label for="sendFile">Attach your reviewed / corrected files</label>
                             <label class="file-drop" id="fileDropLabel" for="sendFile">
                                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
                                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                                     <path d="M12 16V4M12 4 7 9M12 4l5 5" />
                                     <path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
                                 </svg>
-                                <span id="fileDropText">Click to choose a file, or drag it here</span>
+                                <span id="fileDropText">Click to choose files, or drag them here</span>
                             </label>
-                            <input type="file" id="sendFile" name="sendFile" class="sr-only" accept=".pdf,.doc,.docx" />
+                            <input type="file" id="sendFile" name="sendFile" class="sr-only" accept=".pdf,.doc,.docx,.xls,.xlsx" multiple />
+                            <ul id="sendQueue" style="list-style:none;margin:8px 0 0;padding:0;"></ul>
                         </div>
 
                         <p class="form-msg" id="sendMsg" role="status" aria-live="polite"></p>
@@ -241,6 +236,7 @@
     </div>
 
     <script src="Reviewer_file_transfer.js"></script>
+<script src="../shared/sidebar_toggle.js"></script>
 </body>
 
 </html>

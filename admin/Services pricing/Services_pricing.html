@@ -24,6 +24,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
         rel="stylesheet" />
     <link rel="stylesheet" href="Services_pricing.css" />
+    <link rel="icon" type="image/png" sizes="32x32" href="../shared/logo-32.png" />
+    <link rel="apple-touch-icon" href="../shared/logo-180.png" />
 </head>
 
 <body>
@@ -31,7 +33,7 @@
     <!-- SIDEBAR -->
     <aside class="sidebar" id="sidebar" aria-label="Main navigation">
         <a class="sidebar-brand" href="../dashboard/dashboard.html" aria-label="AIDEA Admin home">
-            <span class="brand-icon" aria-hidden="true">AI</span>
+            <img src="../shared/logo-64.png" alt="" width="36" height="36" style="display:block;object-fit:contain;flex-shrink:0">
             <span>
                 <span class="brand-name">AIDEA Admin</span>
                 <div class="brand-sub">Norzagaray College</div>
@@ -42,16 +44,15 @@
             <p class="sidebar-section-label">Overview</p>
             <nav class="sidebar-nav">
                 <a href="../dashboard/dashboard.html">Dashboard</a>
-                <a href="../Report generator/Report_generator.html">Report Generator</a>
             </nav>
 
             <p class="sidebar-section-label">Management</p>
             <nav class="sidebar-nav">
-                <a href="../All students/all-students.html">All Students</a>
+                <a href="../All students/all-students.html">Users</a>
                 <a href="../Thesis submissions/Thesis_submissions.html">Thesis Submissions</a>
                 <a href="../File transfer/file_transfer.html">File Transfer</a>
-                <a href="../Payments/payment.html">Payments</a>
-                <a href="../Receipts/Receipts.html">Receipts</a>
+                <a href="../Payments/payment.html">Requests</a>
+                <a href="../Receipts/Receipts.html">Certificate</a>
                 <a href="../Services pricing/Services_pricing.html" class="active" aria-current="page">Services &amp;
                     Pricing</a>
             </nav>
@@ -59,7 +60,6 @@
             <p class="sidebar-section-label">Quality</p>
             <nav class="sidebar-nav">
                 <a href="../Satisfaction reports/Satisfaction_reports.html">Satisfaction Reports</a>
-                <a href="../Price audit log/Price_audit_log.html">Price Audit Log</a>
                 <a href="../formatting/formatting.html">Format Templates</a>
             </nav>
 
@@ -144,27 +144,6 @@
                 <div class="services-empty"><strong>Loading…</strong></div>
             </section>
 
-            <section class="card">
-                <div class="card-title">Pricing history</div>
-                <div class="table-wrap">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Service</th>
-                                <th>Old price</th>
-                                <th>New price</th>
-                                <th>Changed by</th>
-                                <th>Date</th>
-                            </tr>
-                        </thead>
-                        <tbody id="historyBody">
-                            <tr>
-                                <td colspan="5" class="table-empty">No price history yet.</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </section>
         </main>
     </div>
 
@@ -304,6 +283,7 @@
     </div>
 
     <script src="Services_pricing.js"></script>
+<script src="../shared/sidebar_toggle.js"></script>
 </body>
 
 </html>

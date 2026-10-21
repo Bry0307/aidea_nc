@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0a1a3f" />
     <meta name="csrf-token" content="{{ csrf_token() }}" />
-    <title>Submit Thesis — AIDEA</title>
+    <title>Submit Documents — AIDEA</title>
 
     <!-- Apply saved / system theme BEFORE paint (same student-side key as the dashboard) -->
     <script>
@@ -27,6 +27,8 @@
     <!-- Shared shell first, then this page's styles -->
     <link rel="stylesheet" href="../dashboard/dashboard.css" />
     <link rel="stylesheet" href="submit-thesis.css" />
+    <link rel="icon" type="image/png" sizes="32x32" href="../shared/logo-32.png" />
+    <link rel="apple-touch-icon" href="../shared/logo-180.png" />
 </head>
 
 <body>
@@ -34,15 +36,7 @@
     <!-- SIDEBAR -->
     <aside class="sidebar" id="sidebar" aria-label="Main navigation">
         <a class="sidebar-brand" href="../dashboard/dashboard.html" aria-label="AIDEA home">
-            <span class="brand-mark" aria-hidden="true">
-                <svg viewBox="0 0 32 32" width="32" height="32" fill="none">
-                    <rect width="32" height="32" rx="9" fill="#FFC72C" />
-                    <path d="M9 22.5 16 8l7 14.5" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round"
-                        stroke-linejoin="round" />
-                    <path d="M11.8 18h8.4" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round" />
-                    <circle cx="16" cy="8" r="1.9" fill="#2563eb" />
-                </svg>
-            </span>
+            <span class="brand-mark" aria-hidden="true"><img src="../shared/logo-64.png" alt="" width="32" height="32" style="display:block;object-fit:contain"></span>
             <span class="brand-text">
                 <span class="brand-name">AIDEA</span>
                 <span class="brand-sub">Norzagaray College</span>
@@ -57,7 +51,7 @@
 
             <p class="nav-heading">Main</p>
             <nav class="nav-group">
-                <a href="../submit thesis/submit-thesis.html" class="active" aria-current="page">Submit Thesis</a>
+                <a href="../submit thesis/submit-thesis.html" class="active" aria-current="page">Submit Documents</a>
                 <a href="../my submission/my-submissions.html">My Submissions</a>
             </nav>
 
@@ -65,7 +59,7 @@
             <nav class="nav-group">
                 <a href="../repository/repository.html">Repository</a>
                 <a href="../avail services/avail-services.html">Avail Services</a>
-                <a href="../payments reciepts/payments-reciepts.html">Payments &amp; Receipts</a>
+                <a href="../payments reciepts/payments-reciepts.html">Requests</a>
             </nav>
 
             <p class="nav-heading">Feedback</p>
@@ -124,7 +118,7 @@
                     </svg>
                 </button>
                 <div class="page-title">
-                    <h1>Submit Thesis <span class="badge-role">Student</span></h1>
+                    <h1>Submit Documents <span class="badge-role">Student</span></h1>
                     <p>Fill out the form to submit your research paper</p>
                 </div>
             </div>
@@ -153,7 +147,7 @@
                 <section class="panel">
                     <div class="panel-head">
                         <div>
-                            <h3 class="panel-title">Thesis information</h3>
+                            <h3 class="panel-title">Document Information</h3>
                             <p class="panel-sub">Fields marked <span class="req">*</span> are required</p>
                         </div>
                         <button class="btn-secondary" id="checkFormatBtn" type="button">Check formatting</button>
@@ -162,7 +156,7 @@
                     <form id="thesisForm" novalidate>
                         <div class="field">
                             <label for="thesisTitle">Thesis title <span class="req">*</span></label>
-                            <input type="text" id="thesisTitle" placeholder="Enter the full thesis title" required />
+                            <textarea id="thesisTitle" rows="2" placeholder="Enter the full thesis title" required></textarea>
                         </div>
 
                         <div class="form-row">
@@ -178,15 +172,36 @@
                             </div>
                             <div class="field">
                                 <label for="thesisYear">Academic year <span class="req">*</span></label>
-                                <input type="text" id="thesisYear" placeholder="e.g. 2024–2025" required />
+                                <select id="thesisYear" required>
+                                    <option value="">Select academic year</option>
+                                    <option value="2026-2027">2026-2027</option>
+                                    <option value="2027-2028">2027-2028</option>
+                                    <option value="2028-2029">2028-2029</option>
+                                    <option value="2029-2030">2029-2030</option>
+                                </select>
                             </div>
                         </div>
 
                         <div class="field">
-                            <label for="thesisAbstract">Abstract / summary <span class="req">*</span></label>
-                            <textarea id="thesisAbstract" rows="5" placeholder="Briefly describe your thesis…"
-                                required></textarea>
-                            <span class="field-hint" id="abstractCount">0 words · 150–300 recommended</span>
+                            <span class="label" id="abstractLabel">Abstract / summary <span class="req">*</span></span>
+                            <div class="mode-toggle" role="radiogroup" aria-labelledby="abstractLabel">
+                                <label class="mode-opt"><input type="radio" name="abstractMode" value="text" checked /> Type text</label>
+                                <label class="mode-opt"><input type="radio" name="abstractMode" value="file" /> Upload file (PDF / DOCX)</label>
+                            </div>
+                            <div id="abstractTextWrap">
+                                <textarea id="thesisAbstract" rows="6" placeholder="Write your abstract (150 to 200 words)"></textarea>
+                                <span class="field-hint" id="abstractCount">0 words - required: 150 to 200 words</span>
+                            </div>
+                            <div id="abstractFileWrap" hidden>
+                                <input type="file" id="abstractFile" accept=".pdf,.docx" />
+                                <span class="field-hint">PDF or DOCX, up to 20 MB</span>
+                            </div>
+                        </div>
+
+                        <div class="field">
+                            <span class="label" id="imradLabel">IMRAD file <span class="req" id="imradReq" hidden>*</span><span class="opt" id="imradOpt">(optional)</span></span>
+                            <input type="file" id="imradFile" accept=".pdf,.docx" aria-labelledby="imradLabel" />
+                            <span class="field-hint">PDF or DOCX, up to 20 MB</span>
                         </div>
 
                         <div class="form-row">
@@ -195,22 +210,21 @@
                                 <input type="text" id="adviserName" placeholder="Full name of your adviser" required />
                             </div>
                             <div class="field">
-                                <label for="submissionType">Submission type</label>
-                                <select id="submissionType">
-                                    <option value="initial">Initial submission</option>
-                                    <option value="revision">Revision</option>
-                                    <option value="final">Final copy</option>
+                                <label for="submissionType">Submission type <span class="req">*</span></label>
+                                <select id="submissionType" required>
+                                    <option value="thesis">Thesis paper</option>
+                                    <option value="research">Research paper</option>
                                 </select>
                             </div>
                         </div>
 
                         <div class="field">
-                            <label for="authors">Authors / co-authors <span class="opt">(optional)</span></label>
-                            <input type="text" id="authors" placeholder="Comma-separated names" />
+                            <label for="authors">Researchers <span class="opt">(optional)</span></label>
+                            <textarea id="authors" rows="3" placeholder="One name per line. Press Enter for the next name."></textarea>
                         </div>
 
                         <div class="field">
-                            <span class="label" id="fileLabel">Upload file <span class="req">*</span></span>
+                            <span class="label" id="fileLabel"><span id="fileLabelText">Thesis paper file</span> <span class="req">*</span></span>
                             <div class="file-drop" id="fileDrop" role="button" tabindex="0" aria-labelledby="fileLabel">
                                 <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor"
                                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -224,6 +238,7 @@
                             <div id="filePreview" class="file-preview" hidden></div>
                         </div>
 
+
                         <div class="form-actions">
                             <button type="button" class="btn-secondary" id="resetBtn">Reset</button>
                             <button type="submit" class="btn-primary" id="submitBtn">Submit thesis</button>
@@ -233,20 +248,7 @@
 
                 <!-- GUIDELINES + STEPS -->
                 <div class="info-col">
-                    <section class="panel">
-                        <div class="panel-head">
-                            <h3 class="panel-title">Submission guidelines</h3>
-                        </div>
-                        <ul class="guide-list">
-                            <li>File must be a PDF or DOCX</li>
-                            <li>Maximum file size is 20 MB</li>
-                            <li>Title must match your approved proposal</li>
-                            <li>Abstract should be 150–300 words</li>
-                            <li>Include all co-authors</li>
-                        </ul>
-                    </section>
-
-                    <section class="panel">
+<section class="panel">
                         <div class="panel-head">
                             <h3 class="panel-title">What happens next</h3>
                         </div>
@@ -302,8 +304,10 @@
     </div>
 
     <script src="../login/login.js"></script>
-    <script src="../../admin/formatting/testvalidator.js"></script>
+    <script src="../../admin/formatting/testvalidator.js?v=36"></script>
     <script src="test.js"></script>
+<script src="../shared/sidebar-avatar.js"></script>
+<script src="../shared/sidebar_toggle.js"></script>
 </body>
 
 </html>

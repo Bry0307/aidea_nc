@@ -261,32 +261,37 @@ function renderAdminIdentity(user) {
 // ── Students table ─────────────────────────────────────────────────────────
 
 function render() {
+    const archive = viewMode === 'archive';
+    const cols = archive ? 4 : 3;
     const start = (currentPage - 1) * PAGE_SIZE;
     const rows = filtered.slice(start, start + PAGE_SIZE);
     const tbody = $('studentsBody');
 
     if (!rows.length) {
-        tbody.innerHTML = `<tr><td colspan="3" class="empty">No students found.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="${cols}" class="empty">${archive ? 'No archived students.' : 'No students found.'}</td></tr>`;
         renderPagination();
         return;
     }
 
     tbody.innerHTML = rows.map((s, i) => `
-        <tr>
+        <tr data-id="${escHtml(s.id)}" ${archive ? '' : 'class="row-click" tabindex="0"'}>
             <td data-label="No.">${start + i + 1}</td>
             <td data-label="Name">
                 <div class="avatar-cell">
-                    <span class="avatar" aria-hidden="true">${escHtml(initials(s))}</span>
+                    <span class="avatar" aria-hidden="true" style="overflow:hidden">${s.avatar_url ? `<img src="${escHtml(s.avatar_url)}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%">` : escHtml(initials(s))}</span>
                     <strong>${escHtml(fullName(s))}</strong>
                 </div>
             </td>
-            <td data-label="Email">${escHtml(s.email || '—')}</td>
+            <td data-label="Email">${escHtml(s.email || '-')}</td>
+            ${archive ? `<td data-label="Actions"><div class="row-actions">
+                <button type="button" class="row-act" data-act="unarchive" data-id="${escHtml(s.id)}">Unarchive</button>
+                <button type="button" class="row-act row-act-danger" data-act="delete" data-id="${escHtml(s.id)}">Delete</button>
+            </div></td>` : ''}
         </tr>
     `).join('');
 
     renderPagination();
 }
-
 // 1 … 4 5 6 … 12 — always first, last and the current page's neighbours
 function pageList(current, total) {
     const pages = [...new Set([1, total, current - 1, current, current + 1])]
@@ -328,35 +333,47 @@ function goPage(n) {
     render();
 }
 
+function roleGroup(s) {
+    const r = String(s.role || '').toLowerCase();
+    if (r === 'statistician' || r === 'grammarian') return 'experts';
+    if (r === 'librarian') return 'librarian';
+    return 'students';
+}
+
 function applyFilter() {
     const q = $('searchInput').value.trim().toLowerCase();
-    filtered = allStudents.filter(s =>
+    const f = $('roleFilter') ? $('roleFilter').value : 'all';
+    const byRole = allStudents.filter(s => f === 'all' || roleGroup(s) === f);
+    filtered = byRole.filter(s =>
         fullName(s).toLowerCase().includes(q)
         || (s.email || '').toLowerCase().includes(q)
     );
+    const names = { all: ['user', 'users'], students: ['student', 'students'], experts: ['expert', 'experts'], librarian: ['librarian', 'librarians'] }[f] || ['user', 'users'];
+    const n = byRole.length;
+    setText('studentCount', `${n} ${viewMode === 'archive' ? 'archived' : 'registered'} ${n === 1 ? names[0] : names[1]}`);
     currentPage = 1;
     render();
 }
-
 // ── API calls ──────────────────────────────────────────────────────────────
 
 async function fetchStudents() {
+    const archive = viewMode === 'archive';
     try {
-        const res = await api('/students');
+        const res = await api(archive ? '/students/archived' : '/students');
         if (!res.ok) throw new Error(`Failed to fetch students (${res.status})`);
         allStudents = asList(await res.json());
         filtered = [...allStudents];
-        setText('studentCount', `${allStudents.length} registered ${allStudents.length === 1 ? 'student' : 'students'}`);
+        const n = allStudents.length;
+        setText('studentCount', `${n} ${archive ? 'archived' : 'registered'} ${n === 1 ? 'student' : 'students'}`);
         applyFilter();   // keeps any active search after a save
     } catch (err) {
         console.error(err);
         setText('studentCount', 'Unable to load students');
         $('studentsBody').innerHTML =
-            `<tr><td colspan="3" class="empty error">Couldn’t load students. Check your connection and refresh.</td></tr>`;
+            `<tr><td colspan="${archive ? 4 : 3}" class="empty error">Could not load students. Check your connection and refresh.</td></tr>`;
         $('pagination').hidden = true;
     }
 }
-
 async function saveStudent(formData, id = null) {
     const res = await api(id ? `/students/${id}` : '/students', {
         method: id ? 'PUT' : 'POST',
@@ -560,6 +577,179 @@ async function handleFormSubmit(e) {
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 
+// ARCHIVE-V1: row modal, archive view, unarchive and permanent delete
+let viewMode = 'students';
+let rowStudentId = null;
+
+function setView(mode) {
+    viewMode = mode;
+    const archive = mode === 'archive';
+    $('viewTitle').textContent = archive ? 'Archived users' : '';
+    $('viewTitle').style.display = archive ? '' : 'none';
+    $('archiveViewBtn').textContent = archive ? 'Back to students' : 'Archive';
+    $('actionsTh').hidden = !archive;
+    $('searchInput').value = '';
+    setText('studentCount', 'Loading students...');
+    fetchStudents();
+}
+
+function openRowModal(id) {
+    const s = allStudents.find(x => String(x.id) === String(id));
+    if (!s) return;
+    rowStudentId = s.id;
+    const d = new Date(s.created_at);
+    const when = s.created_at && !isNaN(d) ? d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : '-';
+    $('rowDetails').innerHTML = `<dl class="row-detail">
+        <dt>Name</dt><dd>${escHtml(fullName(s))}</dd>
+        <dt>Email</dt><dd>${escHtml(s.email || '-')}</dd>
+        <dt>Registered</dt><dd>${escHtml(when)}</dd>
+    </dl>`;
+    openOverlay($('rowModal'), { focus: $('rowArchiveBtn') });
+}
+
+async function archiveStudent(id) {
+    try {
+        const res = await api(`/students/${id}/archive`, { method: 'POST' });
+        if (!res.ok) throw new Error('Archive failed');
+        closeOverlay($('rowModal'));
+        await fetchStudents();
+    } catch (err) {
+        console.error(err);
+        alert('Could not archive this student. Please try again.');
+    }
+}
+
+async function unarchiveStudent(id) {
+    try {
+        const res = await api(`/students/${id}/unarchive`, { method: 'POST' });
+        if (!res.ok) throw new Error('Unarchive failed');
+        await fetchStudents();
+    } catch (err) {
+        console.error(err);
+        alert('Could not unarchive this student. Please try again.');
+    }
+}
+
+async function deleteArchived(id) {
+    if (!confirm('Permanently delete this student? This cannot be undone.')) return;
+    try {
+        const res = await api(`/students/${id}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Delete failed');
+        await fetchStudents();
+    } catch (err) {
+        console.error(err);
+        alert('Could not delete this student. Please try again.');
+    }
+}
+
+// EXPERT-ACCOUNTS: create / list / remove statistician and grammarian accounts
+const expertAsList = raw => Array.isArray(raw) ? raw : (raw?.data ?? []);
+const EXPERT_LABELS = { statistician: 'Statistician', grammarian: 'Grammarian' };
+
+function expertMsg(text, type) {
+    const el = $('expMsg');
+    el.textContent = text || '';
+    el.className = 'exp-msg' + (type ? ' ' + type : '');
+}
+
+async function loadExperts() {
+    const tbody = $('expBody');
+    try {
+        const res = await api('/admin/reviewers');
+        if (!res.ok) throw new Error();
+        const list = expertAsList(await res.json());
+        if (!list.length) { tbody.innerHTML = '<tr><td colspan="4" class="empty">No expert accounts yet.</td></tr>'; return; }
+        tbody.innerHTML = list.map(r => `
+            <tr>
+                <td><strong>${escHtml([r.fname, r.lname].filter(Boolean).join(' ') || '-')}</strong></td>
+                <td>${escHtml(r.email || '-')}</td>
+                <td>${escHtml(EXPERT_LABELS[r.role] || r.role || '-')}</td>
+                <td><button type="button" class="row-act" data-exp-remove="${escHtml(r.id)}">Archive</button></td>
+            </tr>`).join('');
+    } catch {
+        tbody.innerHTML = '<tr><td colspan="4" class="empty error">Could not load expert accounts.</td></tr>';
+    }
+}
+
+// CONFIRM-MODAL: in-page replacement for window.confirm (resolves true/false)
+function askConfirm(title, text, okLabel) {
+    return new Promise(resolve => {
+        const m = $('confirmModal');
+        $('confirmTitle').textContent = title;
+        $('confirmText').textContent = text;
+        $('confirmOk').textContent = okLabel || 'Confirm';
+        let done = false;
+        const finish = val => {
+            if (done) return;
+            done = true;
+            obs.disconnect();
+            $('confirmOk').removeEventListener('click', onOk);
+            $('confirmCancel').removeEventListener('click', onNo);
+            if (!m.hidden) closeOverlay(m);
+            resolve(val);
+        };
+        const onOk = () => finish(true);
+        const onNo = () => finish(false);
+        // Escape or a click outside the box hides the modal: treat that as "no"
+        const obs = new MutationObserver(() => { if (m.hidden) finish(false); });
+        obs.observe(m, { attributes: true, attributeFilter: ['hidden'] });
+        $('confirmOk').addEventListener('click', onOk);
+        $('confirmCancel').addEventListener('click', onNo);
+        openOverlay(m, { focus: $('confirmCancel') });
+    });
+}
+
+// EXPERT-ARCHIVE: archive instead of delete; the account then shows in the Archive view
+async function removeExpert(id) {
+    if (!(await askConfirm('Archive this expert account?', 'They will no longer be able to log in. You can restore them from the Archive view.', 'Archive'))) return;
+    try {
+        const res = await api(`/students/${id}/archive`, { method: 'POST' });
+        if (!res.ok) throw new Error();
+        await loadExperts();
+        await fetchStudents();
+    } catch {
+        alert('Could not archive that account. Try again.');
+    }
+}
+function openExperts() {
+    $('expForm').reset();
+    expertMsg('', null);
+    openOverlay($('expModal'), { focus: $('expFname') });
+    loadExperts();
+}
+
+async function createExpert(e) {
+    e.preventDefault();
+    const p = {
+        fname: $('expFname').value.trim(),
+        lname: $('expLname').value.trim(),
+        email: $('expEmail').value.trim(),
+        role: $('expRole').value,
+        password: $('expPass').value,
+        password_confirmation: $('expPass2').value,
+    };
+    if (!p.fname || !p.lname || !p.email || !p.role || !p.password) { expertMsg('Please fill in every field.', 'error'); return; }
+    if (p.password.length < 8) { expertMsg('Password must be at least 8 characters.', 'error'); return; }
+    if (p.password !== p.password_confirmation) { expertMsg('Password and confirmation do not match.', 'error'); return; }
+    $('expSave').disabled = true;
+    expertMsg('', null);
+    try {
+        const res = await api('/admin/reviewers', { method: 'POST', body: JSON.stringify(p) });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            const first = Object.values(err.errors || {})[0];
+            throw new Error(first ? first[0] : (err.message || 'Could not create this account.'));
+        }
+        $('expForm').reset();
+        expertMsg('Account created.', 'success');
+        await loadExperts();
+        await fetchStudents();
+    } catch (err) {
+        expertMsg(err.message || 'Something went wrong. Try again.', 'error');
+    }
+    $('expSave').disabled = false;
+}
+
 document.addEventListener('DOMContentLoaded', () => {
 
     // Guard — admin only
@@ -579,7 +769,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Students
     $('searchInput').addEventListener('input', applyFilter);
-    $('addStudentBtn').addEventListener('click', openAddModal);
+    $('roleFilter').addEventListener('change', applyFilter);
+    $('expertBtn').addEventListener('click', openExperts);
+    $('expClose').addEventListener('click', () => closeOverlay($('expModal')));
+    $('expForm').addEventListener('submit', createExpert);
+    $('expBody').addEventListener('click', e => {
+        const b = e.target.closest('[data-exp-remove]');
+        if (b) removeExpert(b.dataset.expRemove);
+    });
     $('studentForm').addEventListener('submit', handleFormSubmit);
 
     // Emails are lowercase only: typed or pasted capitals are converted as you go
@@ -614,6 +811,27 @@ document.addEventListener('DOMContentLoaded', () => {
     $('pageBtns').addEventListener('click', e => {
         const btn = e.target.closest('[data-page]');
         if (btn && !btn.disabled) goPage(Number(btn.dataset.page));
+    });
+
+    // ARCHIVE-V1 wiring
+    $('archiveViewBtn').addEventListener('click', () => setView(viewMode === 'archive' ? 'students' : 'archive'));
+    $('rowArchiveBtn').addEventListener('click', () => { if (rowStudentId != null) archiveStudent(rowStudentId); });
+    $('rowCloseBtn').addEventListener('click', () => closeOverlay($('rowModal')));
+    $('studentsBody').addEventListener('click', e => {
+        const act = e.target.closest('button[data-act]');
+        if (act) {
+            if (act.dataset.act === 'unarchive') unarchiveStudent(act.dataset.id);
+            else deleteArchived(act.dataset.id);
+            return;
+        }
+        if (viewMode !== 'students') return;
+        const tr = e.target.closest('tr[data-id]');
+        if (tr) openRowModal(tr.dataset.id);
+    });
+    $('studentsBody').addEventListener('keydown', e => {
+        if (e.key !== 'Enter' || viewMode !== 'students') return;
+        const tr = e.target.closest('tr.row-click');
+        if (tr) openRowModal(tr.dataset.id);
     });
 
     fetchStudents();

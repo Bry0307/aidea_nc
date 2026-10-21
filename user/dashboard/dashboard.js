@@ -205,15 +205,29 @@ function renderUserIdentity(user) {
 
 // ── Data ───────────────────────────────────────────────────────────────────
 
+let mySubmissionsPromise = null;
+function getMySubmissions() {
+    if (!mySubmissionsPromise) {
+        mySubmissionsPromise = api('/thesis/my-submissions').then(asList);
+    }
+    return mySubmissionsPromise;
+}
+
+const TYPE_LABELS = { thesis: 'Thesis paper', research: 'Research paper', initial: 'Initial', revision: 'Revision', final: 'Final' };
+
 async function loadDashboardStats() {
     try {
-        const d = await api('/dashboard/stats');
-        setText('stat-submissions', d.submissions ?? '—');
-        setText('stat-approved', d.approved ?? '—');
-        setText('stat-paid', '₱' + Number(d.total_paid || 0).toLocaleString('en-PH'));
-        setText('stat-rating', d.avg_rating ?? '—');
+        const list = await getMySubmissions();
+        setText('stat-submissions', list.length);
+        setText('stat-approved', list.filter(t => String(t.status).toLowerCase() === 'approved').length);
     } catch (err) {
         console.warn('Stats error:', err);
+    }
+    try {
+        const d = await api('/dashboard/stats');
+        setText('stat-rating', d.avg_rating ?? '-');
+    } catch (err) {
+        console.warn('Rating error:', err);
     }
 }
 
@@ -222,24 +236,31 @@ async function loadRecentSubmissions() {
     if (!tbody) return;
 
     try {
-        const list = asList(await api('/submissions?limit=5'));
+        const list = (await getMySubmissions())
+            .slice()
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+            .slice(0, 5);
         if (!list.length) {
-            tbody.innerHTML = `<tr><td colspan="4" class="empty">No submissions yet. Submit your first thesis to get started.</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="4" class="empty">No submissions yet. Submit your first document to get started.</td></tr>`;
             return;
         }
-        tbody.innerHTML = list.map(t => `
+        tbody.innerHTML = list.map(t => {
+            const s = String(t.status || '').toLowerCase();
+            const status = (s === 'approved' || s === 'rejected') ? s : 'under_review';
+            const type = TYPE_LABELS[t.submission_type] || t.submission_type || '';
+            return `
             <tr>
-                <td data-label="Title"><strong>${escHtml(t.title)}</strong></td>
-                <td data-label="Submitted">${formatMonth(t.submitted_at)}</td>
-                <td data-label="Status">${statusBadge(t.status)}</td>
+                <td data-label="Title"><div class="title-wrap"><strong>${escHtml(t.title)}</strong>${type ? `<small class="title-type">${escHtml(type)}</small>` : ''}</div></td>
+                <td data-label="Submitted">${formatMonth(t.created_at)}</td>
+                <td data-label="Status">${statusBadge(status)}</td>
                 <td data-label="Actions"><button class="btn-action" type="button" onclick="viewThesis(${Number(t.id)})">View</button></td>
-            </tr>`).join('');
+            </tr>`;
+        }).join('');
     } catch (err) {
         console.warn('Submissions error:', err);
-        tbody.innerHTML = `<tr><td colspan="4" class="empty">Couldn’t load submissions. Check your connection and refresh.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="4" class="empty">Couldn't load submissions. Check your connection and refresh.</td></tr>`;
     }
 }
-
 async function loadUpcomingEvents() {
     const listEl = document.getElementById('event-list');
     if (!listEl) return;
@@ -274,9 +295,180 @@ async function loadUpcomingEvents() {
     }
 }
 
-function viewThesis(id) {
-    window.location.href = `../my submission/my-submissions.html?id=${id}`;
+const TYPE_LABELS_VIEW = { thesis: 'Thesis paper', research: 'Research paper', initial: 'Initial', revision: 'Revision', final: 'Final copy' };
+let viewLastTrigger = null;
+
+function previewUrlOf(p) {
+    if (!p) return '';
+    if (/^https?:\/\//i.test(p)) return p;
+    return new URL(DASH_API, location.href).origin + '/storage/' + String(p).replace(/^\/+/, '').replace(/^storage\//, '');
 }
+
+function openFilePreview(url, name) {
+    const isPdf = /\.pdf$/i.test(String(name));
+    const bg = document.createElement('div');
+    bg.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;padding:2vh 2vw';
+    const box = document.createElement('div');
+    box.style.cssText = 'width:96vw;height:94vh;display:flex;flex-direction:column;background:#fff;color:#111;border-radius:12px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.5)';
+    const head = document.createElement('div');
+    head.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid #ddd';
+    const title = document.createElement('strong');
+    title.textContent = name;
+    title.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button'; closeBtn.textContent = 'Close';
+    closeBtn.style.cssText = 'padding:8px 18px;border-radius:8px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;border:1px solid #cbd5e1;background:#fff;color:#111';
+    head.append(title, closeBtn);
+    const fr = document.createElement('iframe');
+    fr.title = 'File preview';
+    fr.src = isPdf ? url : 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(url);
+    fr.style.cssText = 'flex:1;width:100%;border:0;background:#fff';
+    box.append(head, fr);
+    bg.appendChild(box);
+    document.body.appendChild(bg);
+    const close = () => { bg.remove(); document.removeEventListener('keydown', onKey, true); };
+    const onKey = ev => { if (ev.key === 'Escape') { ev.stopImmediatePropagation(); close(); } };
+    document.addEventListener('keydown', onKey, true);
+    bg.addEventListener('click', ev => { if (ev.target === bg) close(); });
+    closeBtn.addEventListener('click', close);
+}
+
+function closeViewModal() {
+    const overlay = document.getElementById('modalOverlay');
+    overlay.hidden = true;
+    if (!document.getElementById('sidebar')?.classList.contains('open')) document.body.classList.remove('no-scroll');
+    viewLastTrigger?.focus?.();
+}
+
+async function viewThesis(id) {
+    const overlay = document.getElementById('modalOverlay');
+    const body = document.getElementById('modalBody');
+    if (!overlay || !body) return;
+    let d;
+    try { d = (await getMySubmissions()).find(t => Number(t.id) === Number(id)); } catch (e) { d = null; }
+    if (!d) return;
+    viewLastTrigger = document.activeElement;
+    const s = String(d.status || '').toLowerCase();
+    const key = (s === 'approved' || s === 'rejected') ? s : 'under_review';
+    const when = new Date(d.created_at);
+    const dateText = isNaN(when) ? '-' : when.toLocaleString('en-PH', { year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    const fileName = d.file_name || d.original_name || (d.file_path ? String(d.file_path).split('/').pop() : '');
+    const fileExt = fileName.includes('.') ? fileName.split('.').pop().toUpperCase() : '';
+    const abstractFileUrl = previewUrlOf(d.abstract_file_path);
+    const abstractHtml = abstractFileUrl
+        ? `<p style="margin:0"><a href="${escHtml(abstractFileUrl)}" data-preview="${escHtml(abstractFileUrl)}" data-name="${escHtml(String(d.abstract_file_path).split('/').pop())}" style="cursor:pointer">${escHtml(String(d.abstract_file_path).split('/').pop())}</a> <span style="opacity:.6">(uploaded file)</span></p>`
+        : `<p style="margin:0;white-space:pre-wrap">${escHtml(d.abstract || 'No abstract available.')}</p>`;
+
+    // title heading removed (duplicate of the first row)
+    body.innerHTML = `
+        <dl class="detail-list">
+            <dt>Research/Thesis title</dt><dd>${escHtml(d.title || '-')}</dd>
+            <dt>Research Type</dt><dd>${escHtml(TYPE_LABELS_VIEW[d.submission_type] || d.submission_type || '-')}</dd>
+            <dt>File Name</dt><dd>${escHtml(fileName || '-')}</dd>
+            <dt>File Type</dt><dd>${escHtml(fileExt || '-')}</dd>
+            <dt>Status</dt><dd>${statusBadge(key)}</dd>
+            <dt>Date Submitted</dt><dd>${escHtml(dateText)}</dd>
+        </dl>
+        <div style="margin-top:16px">
+            <h4 style="margin:0 0 6px">Abstract</h4>
+            ${abstractHtml}
+        </div>
+        ${d.remarks ? `
+        <div class="remarks">
+            <h4>Admin remarks</h4>
+            <p class="remarks-${key}">${escHtml(d.remarks)}</p>
+        </div>` : ''}`;
+
+    const pUrl = previewUrlOf(d.file_path);
+    if (pUrl) {
+        const pName = fileName || 'file';
+        const isPdf = /\.pdf$/i.test(String(d.file_path));
+        const downloadFile = async () => {
+            const ext = pName.includes('.') ? '.' + pName.split('.').pop() : '';
+            const base = String(d.title || '').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100);
+            const suggested = (base || pName.replace(/\.[^.]+$/, '')) + ext;
+            let handle = null;
+            if (window.showSaveFilePicker) {
+                try { handle = await window.showSaveFilePicker({ suggestedName: suggested }); } catch (err) { return; }
+            }
+            try {
+                const r = await fetch(pUrl);
+                if (!r.ok) throw new Error('bad response');
+                const blob = await r.blob();
+                if (handle) {
+                    const w = await handle.createWritable();
+                    await w.write(blob);
+                    await w.close();
+                } else {
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = suggested;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+                }
+            } catch (err) {
+                alert('The file could not be downloaded. Please try again.');
+            }
+        };
+        const openWidePreview = () => {
+            const bg = document.createElement('div');
+            bg.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;padding:2vh 2vw';
+            const box = document.createElement('div');
+            box.style.cssText = 'width:96vw;height:94vh;display:flex;flex-direction:column;background:#fff;color:#111;border-radius:12px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.5)';
+            const head = document.createElement('div');
+            head.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid #ddd';
+            const title = document.createElement('strong');
+            title.textContent = pName;
+            title.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+            const closeBtn = document.createElement('button');
+            closeBtn.type = 'button'; closeBtn.textContent = 'Close';
+            closeBtn.style.cssText = 'padding:8px 18px;border-radius:8px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;border:1px solid #cbd5e1;background:#fff;color:#111';
+            head.append(title, closeBtn);
+            const fr = document.createElement('iframe');
+            fr.title = 'File preview';
+            fr.src = isPdf ? pUrl : 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(pUrl);
+            fr.style.cssText = 'flex:1;width:100%;border:0;background:#fff';
+            box.append(head, fr);
+            bg.appendChild(box);
+            document.body.appendChild(bg);
+            const close = () => { bg.remove(); document.removeEventListener('keydown', onKey, true); };
+            const onKey = ev => { if (ev.key === 'Escape') { ev.stopImmediatePropagation(); close(); } };
+            document.addEventListener('keydown', onKey, true);
+            bg.addEventListener('click', ev => { if (ev.target === bg) close(); });
+            closeBtn.addEventListener('click', close);
+        };
+        body.insertAdjacentHTML('beforeend', `
+            <div style="margin-top:16px">
+                <h4 style="margin:0 0 8px">File preview</h4>
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <button type="button" class="btn-action" id="previewToggle">Preview</button>
+                    <button type="button" class="btn-action" id="downloadBtn">Download</button>
+                </div>
+            </div>`);
+        document.getElementById('previewToggle').addEventListener('click', openWidePreview);
+        document.getElementById('downloadBtn').addEventListener('click', downloadFile);
+    }
+
+    overlay.hidden = false;
+    document.body.classList.add('no-scroll');
+    document.getElementById('modalClose').focus();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const overlay = document.getElementById('modalOverlay');
+    if (!overlay) return;
+    document.getElementById('modalClose').addEventListener('click', closeViewModal);
+    document.getElementById('modalBody').addEventListener('click', e => {
+        const a = e.target.closest('a[data-preview]');
+        if (!a) return;
+        e.preventDefault();
+        openFilePreview(a.dataset.preview, a.dataset.name);
+    });
+    overlay.addEventListener('click', e => { if (e.target === overlay) closeViewModal(); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && !overlay.hidden) closeViewModal(); });
+});
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 

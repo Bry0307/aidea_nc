@@ -1,10 +1,10 @@
 /* ==========================================================================
-   AIDEA Student — My Profile
+   AIDEA Student � My Profile
    Page-specific styles only. Shell, theme variables (light/dark), .panel,
    .btn-primary and .modal come from ../dashboard/dashboard.css (loaded first).
    ========================================================================== */
 
-/* ── Layout ── */
+/* -- Layout -- */
 .profile-layout {
     display: grid;
     grid-template-columns: 300px minmax(0, 1fr);
@@ -19,7 +19,7 @@
     min-width: 0;
 }
 
-/* ── Identity card ── */
+/* -- Identity card -- */
 .avatar-card {
     display: flex;
     flex-direction: column;
@@ -110,7 +110,7 @@
     margin-top: 12px;
 }
 
-/* ── Buttons (dashboard.css only has .btn-primary) ── */
+/* -- Buttons (dashboard.css only has .btn-primary) -- */
 button.btn-primary {
     border: 0;
     cursor: pointer;
@@ -144,7 +144,7 @@ button.btn-primary {
     border-radius: 9px;
 }
 
-/* ── Forms ── */
+/* -- Forms -- */
 .profile-form {
     display: flex;
     flex-direction: column;
@@ -222,7 +222,7 @@ button.btn-primary {
     margin-top: 4px;
 }
 
-/* ── Toast ── */
+/* -- Toast -- */
 .toast-wrap {
     position: fixed;
     right: max(20px, env(safe-area-inset-right, 0px));
@@ -249,7 +249,7 @@ button.btn-primary {
     background: var(--bad-fg);
 }
 
-/* ── Responsive ── */
+/* -- Responsive -- */
 @media (max-width: 1024px) {
     .profile-layout {
         grid-template-columns: 1fr;

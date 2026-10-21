@@ -24,6 +24,11 @@
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
     rel="stylesheet" />
   <link rel="stylesheet" href="Receipts.css" />
+<style>
+  #receiptsGrid, #searchInput, #certTabs .cert-tab { display: none !important; }
+</style>
+    <link rel="icon" type="image/png" sizes="32x32" href="../shared/logo-32.png" />
+    <link rel="apple-touch-icon" href="../shared/logo-180.png" />
 </head>
 
 <body>
@@ -31,7 +36,7 @@
   <!-- SIDEBAR -->
   <aside class="sidebar" id="sidebar" aria-label="Main navigation">
     <a class="sidebar-brand" href="../dashboard/dashboard.html" aria-label="AIDEA Admin home">
-      <span class="brand-icon" aria-hidden="true">AI</span>
+      <img src="../shared/logo-64.png" alt="" width="36" height="36" style="display:block;object-fit:contain;flex-shrink:0">
       <span>
         <span class="brand-name">AIDEA Admin</span>
         <div class="brand-sub">Norzagaray College</div>
@@ -42,23 +47,21 @@
       <p class="sidebar-section-label">Overview</p>
       <nav class="sidebar-nav">
         <a href="../dashboard/dashboard.html">Dashboard</a>
-        <a href="../Report generator/Report_generator.html">Report Generator</a>
       </nav>
 
       <p class="sidebar-section-label">Management</p>
       <nav class="sidebar-nav">
-        <a href="../All students/all-students.html">All Students</a>
+        <a href="../All students/all-students.html">Users</a>
         <a href="../Thesis submissions/Thesis_submissions.html">Thesis Submissions</a>
         <a href="../File transfer/file_transfer.html">File Transfer</a>
-        <a href="../Payments/payment.html">Payments</a>
-        <a href="../Receipts/Receipts.html" class="active" aria-current="page">Receipts</a>
+        <a href="../Payments/payment.html">Requests</a>
+        <a href="../Receipts/Receipts.html" class="active" aria-current="page">Certificate</a>
         <a href="../Services pricing/Services_pricing.html">Services &amp; Pricing</a>
       </nav>
 
       <p class="sidebar-section-label">Quality</p>
       <nav class="sidebar-nav">
         <a href="../Satisfaction reports/Satisfaction_reports.html">Satisfaction Reports</a>
-        <a href="../Price audit log/Price_audit_log.html">Price Audit Log</a>
         <a href="../formatting/formatting.html">Format Templates</a>
       </nav>
 
@@ -134,10 +137,24 @@
 
     <main class="content">
       <div class="toolbar">
-        <input type="text" class="search-input" id="searchInput"
+        <div class="cert-tabs" id="certTabs">
+                <button type="button" class="cert-tab active" data-cert-tab="certificates">Certificates <span class="cert-count" id="countCert">0</span></button>
+                <button type="button" class="cert-tab" data-cert-tab="files">Files <span class="cert-count" id="countFiles">0</span></button>
+            </div>
+            <input type="text" class="search-input" id="searchInput"
           placeholder="Search by student, receipt no. or GCash ref…" />
       </div>
 
+      <section id="tplPanel" style="margin:0 0 18px;padding:16px;border:1px solid rgba(128,128,128,.3);border-radius:12px">
+        <h3 style="margin:0 0 4px;font-size:16px">Certificate templates</h3>
+        <p style="margin:0 0 12px;font-size:13px;opacity:.75">Upload a certificate template as a PDF or DOCX file. Saved templates appear in Generate certificate.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px">
+          <input type="text" id="tplName" placeholder="Template name" maxlength="120" style="padding:9px 12px;border:1px solid rgba(128,128,128,.4);border-radius:8px;background:transparent;color:inherit;font:inherit;min-width:200px">
+          <input type="file" id="tplFile" accept=".pdf,.docx" style="font:inherit;max-width:260px">
+          <button type="button" id="tplAdd" style="padding:9px 16px;border:0;border-radius:8px;background:#2f6bff;color:#fff;font:inherit;font-weight:600;cursor:pointer">Upload template</button>
+        </div>
+        <div id="tplList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px"></div>
+      </section>
       <section class="receipts-grid" id="receiptsGrid" aria-label="Receipts" aria-busy="true">
         <div class="receipts-empty"><strong>Loading…</strong></div>
       </section>
@@ -165,6 +182,9 @@
   </div>
 
   <script src="Receipts.js"></script>
+<script src="Templates.js"></script>
+<script src="CertGen.js"></script>
+<script src="../shared/sidebar_toggle.js"></script>
 </body>
 
 </html>

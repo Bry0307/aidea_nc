@@ -27,6 +27,8 @@
         rel="stylesheet" />
     <link rel="stylesheet" href="../dashboard/dashboard.css" />
     <link rel="stylesheet" href="Thesis_reviewer.css" />
+    <link rel="icon" type="image/png" sizes="32x32" href="../shared/logo-32.png" />
+    <link rel="apple-touch-icon" href="../shared/logo-180.png" />
 </head>
 
 <body>
@@ -34,15 +36,7 @@
     <!-- SIDEBAR — trimmed to the reviewer's own scope -->
     <aside class="sidebar" id="sidebar" aria-label="Main navigation">
         <a class="sidebar-brand" href="Thesis_reviewer.html" aria-label="AIDEA Admin home">
-            <span class="brand-mark" aria-hidden="true">
-                <svg viewBox="0 0 32 32" width="32" height="32" fill="none">
-                    <rect width="32" height="32" rx="9" fill="#FFC72C" />
-                    <path d="M9 22.5 16 8l7 14.5" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round"
-                        stroke-linejoin="round" />
-                    <path d="M11.8 18h8.4" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round" />
-                    <circle cx="16" cy="8" r="1.9" fill="#2563eb" />
-                </svg>
-            </span>
+            <span class="brand-mark" aria-hidden="true"><img src="../shared/logo-64.png" alt="" width="32" height="32" style="display:block;object-fit:contain"></span>
             <span class="brand-text">
                 <span class="brand-name">AIDEA Admin</span>
                 <span class="brand-sub">Norzagaray College</span>
@@ -166,6 +160,11 @@
 
             <form id="sendBackForm" class="account-form" novalidate>
                 <div class="field">
+                    <p id="svSavedChip" hidden style="margin:0 0 8px;font-size:13px;font-weight:600"></p>
+                    <div id="svAsWrap" hidden style="margin:0 0 10px;font-size:13px">Attach as:
+                        <label style="margin-left:8px;display:inline"><input type="radio" name="svAs" value="reviewed" checked> Reviewed file</label>
+                        <label style="margin-left:12px;display:inline"><input type="radio" name="svAs" value="comments"> Comments</label>
+                    </div>
                     <label for="reviewNote">Note to the admin (optional)</label>
                     <textarea id="reviewNote" name="reviewNote" rows="3"
                         placeholder="e.g. Statistical treatment looks correct, no further changes needed."></textarea>
@@ -181,7 +180,20 @@
                         </svg>
                         <span id="fileDropText">Click to choose a file, or drag it here</span>
                     </label>
-                    <input type="file" id="reviewFile" name="reviewFile" class="sr-only" accept=".pdf,.doc,.docx" />
+                    <input type="file" id="reviewFile" name="reviewFile" class="sr-only" accept=".pdf,.doc,.docx,.xls,.xlsx" />
+                </div>
+
+                <div class="field">
+                    <label for="commentsFile">Attach your comments file (optional)</label>
+                    <label class="file-drop" id="commentsDropLabel" for="commentsFile">
+                        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M12 16V4M12 4 7 9M12 4l5 5" />
+                            <path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+                        </svg>
+                        <span id="commentsDropText">Click to choose a file, or drag it here</span>
+                    </label>
+                    <input type="file" id="commentsFile" name="commentsFile" class="sr-only" accept=".pdf,.doc,.docx,.xls,.xlsx" />
                 </div>
 
                 <p class="form-msg" id="sendBackMsg" role="status" aria-live="polite"></p>
@@ -217,6 +229,8 @@
     </div>
 
     <script src="Thesis_reviewer.js"></script>
+    <script src="reviewer_split_view.js"></script>
+<script src="../shared/sidebar_toggle.js"></script>
 </body>
 
 </html>

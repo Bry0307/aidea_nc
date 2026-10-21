@@ -1,4 +1,4 @@
-// repository.js — Repository (student side)
+// repository.js - Repository (student side)
 // Papers are loaded from the backend: GET /api/public/thesis
 // (approved + visible_in_repo). "Read paper" streams the file from
 // /api/thesis/file/{id} using the student's login token.
@@ -15,7 +15,7 @@ function escHtml(str) {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// ── Session ────────────────────────────────────────────────────────────────
+// -- Session --
 
 const getToken = () => localStorage.getItem('auth_token') || null;
 
@@ -39,7 +39,7 @@ async function performSignOut() {
   window.location.href = LOGIN_URL;
 }
 
-// ── Theme ──────────────────────────────────────────────────────────────────
+// -- Theme --
 
 const currentTheme = () => document.documentElement.getAttribute('data-theme') || 'light';
 
@@ -62,7 +62,7 @@ function initTheme() {
   });
 }
 
-// ── Drawer, profile menu, sign-out modal ───────────────────────────────────
+// -- Drawer, profile menu, sign-out modal --
 
 function initDrawer() {
   const sidebar = $('sidebar'), scrim = $('scrim'), btn = $('menuBtn');
@@ -136,7 +136,7 @@ function renderUserIdentity(user) {
   if (q('.footer-role')) q('.footer-role').textContent = user.course || 'Student';
 }
 
-// ── Repository data (from the backend) ─────────────────────────────────────
+// -- Repository data (from the backend) --
 
 async function fetchPapers() {
   const headers = { 'Accept': 'application/json' };
@@ -159,32 +159,118 @@ async function fetchPapers() {
     abstract: t.abstract || '',
     addedAt: t.created_at || '',
     hasFile: Boolean(t.has_file) && t.id != null,
+    hasImrad: Boolean(t.has_imrad) && t.id != null,
   }));
 }
 
-// Streams the file with the student's token, then opens it in a new tab.
-async function openPaperFile(id, btn) {
+// REPO-PREVIEW-V1: read in a modal, download with the student's token
+async function fetchPaperBlob(id, type) {
   const token = getToken();
-  if (!token) { window.location.href = LOGIN_URL; return; }
+  if (!token) { window.location.href = LOGIN_URL; return null; }
+  const res = await fetch(`${API_BASE}/thesis/file/${encodeURIComponent(id)}${type ? '?type=' + type : ''}`, {
+    headers: { 'Authorization': `Bearer ${token}`, 'Accept': '*/*' },
+  });
+  if (res.status === 401) { window.location.href = LOGIN_URL; return null; }
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const blob = await res.blob();
+  const ct = (res.headers.get('Content-Type') || blob.type || '').toLowerCase();
+  const cd = res.headers.get('Content-Disposition') || '';
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+  let name = ''; try { name = m ? decodeURIComponent(m[1]) : ''; } catch { name = m ? m[1] : ''; }
+  const isPdf = ct.includes('pdf') || /\.pdf$/i.test(name);
+  const ext = isPdf ? '.pdf' : /wordprocessingml/.test(ct) ? '.docx' : /msword/.test(ct) ? '.doc' : (name.includes('.') ? '.' + name.split('.').pop() : '');
+  return { blob, isPdf, ext };
+}
 
+function paperTitleFor(btn) {
+  return (btn && btn.closest && btn.closest('.repo-card')?.querySelector('.repo-title')?.textContent)
+    || document.getElementById('paperTitle')?.textContent || 'paper';
+}
+
+// REPO-SAVEAS: Save As window so the student can pick the folder and file name
+async function saveBlob(blob, suggested) {
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({ suggestedName: suggested });
+      const w = await handle.createWritable();
+      await w.write(blob);
+      await w.close();
+      return;
+    } catch (err) {
+      if (err && err.name === 'AbortError') return; // student cancelled
+    }
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = suggested;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+function paperFileName(title, type, ext) {
+  const base = String(title || 'paper').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100) || 'paper';
+  return base + (type === 'imrad' ? ' - IMRAD' : '') + ext;
+}
+
+function showPaperPreview(file, title, type) {
+  const url = URL.createObjectURL(file.blob);
+  const bg = document.createElement('div');
+  bg.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;padding:2vh 2vw';
+  const box = document.createElement('div');
+  box.style.cssText = 'width:96vw;height:94vh;display:flex;flex-direction:column;background:#fff;color:#111;border-radius:12px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.5)';
+  const head = document.createElement('div');
+  head.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid #ddd';
+  const t = document.createElement('strong');
+  t.textContent = title + (type === 'imrad' ? ' (IMRAD)' : '');
+  t.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+  const btnCss = 'padding:8px 18px;border-radius:8px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;border:1px solid #cbd5e1;background:#fff;color:#111';
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button'; closeBtn.textContent = 'Close'; closeBtn.style.cssText = btnCss;
+  head.append(t, closeBtn);
+  box.appendChild(head);
+  if (file.isPdf) {
+    const fr = document.createElement('iframe');
+    fr.title = 'File preview';
+    fr.src = url;
+    fr.style.cssText = 'flex:1;width:100%;border:0;background:#fff';
+    box.appendChild(fr);
+  } else {
+    const msg = document.createElement('div');
+    msg.style.cssText = 'flex:1;display:grid;place-items:center;padding:24px;text-align:center;font-size:15px';
+    msg.textContent = 'Preview is not available for Word files. Use Download to open this paper.';
+    box.appendChild(msg);
+  }
+  bg.appendChild(box);
+  document.body.appendChild(bg);
+  const close = () => { bg.remove(); URL.revokeObjectURL(url); document.removeEventListener('keydown', onKey, true); };
+  const onKey = ev => { if (ev.key === 'Escape') { ev.stopImmediatePropagation(); close(); } };
+  document.addEventListener('keydown', onKey, true);
+  bg.addEventListener('click', ev => { if (ev.target === bg) close(); });
+  closeBtn.addEventListener('click', close);
+}
+
+async function openPaperFile(id, btn, type) {
   const label = btn ? btn.textContent : '';
-  if (btn) { btn.disabled = true; btn.textContent = 'Opening…'; }
-  const win = window.open('', '_blank'); // open synchronously so popup blockers allow it
-
+  if (btn) { btn.disabled = true; btn.textContent = 'Opening...'; }
   try {
-    const res = await fetch(`${API_BASE}/thesis/file/${encodeURIComponent(id)}`, {
-      headers: { 'Authorization': `Bearer ${token}`, 'Accept': '*/*' },
-    });
-    if (res.status === 401) { win?.close(); window.location.href = LOGIN_URL; return; }
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    if (win) win.location.href = url; else window.open(url, '_blank');
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    const file = await fetchPaperBlob(id, type);
+    if (file) showPaperPreview(file, paperTitleFor(btn), type);
   } catch {
-    win?.close();
     alert('Sorry, this paper could not be opened right now. Please try again later.');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
+}
+
+async function downloadPaperFile(id, btn, type) {
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Downloading...'; }
+  try {
+    const file = await fetchPaperBlob(id, type);
+    if (file) await saveBlob(file.blob, paperFileName(paperTitleFor(btn), type, file.ext));
+  } catch {
+    alert('The file could not be downloaded. Please try again.');
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = label; }
   }
@@ -194,10 +280,10 @@ function formatDate(raw) {
   const d = new Date(raw);
   return raw && !isNaN(d)
     ? d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })
-    : '—';
+    : '\u2014';
 }
 
-// ── Repository UI ──────────────────────────────────────────────────────────
+// -- Repository UI --
 
 async function initRepository() {
   const grid = $('repoGrid');
@@ -249,8 +335,8 @@ async function initRepository() {
     grid.innerHTML = visible.map((p, i) => `
             <article class="repo-card">
                 <div class="repo-meta">
-                    <span class="repo-course">${escHtml(p.course || '—')}</span>
-                    <span class="repo-year">${escHtml(p.year || '—')}</span>
+                    <span class="repo-course">${escHtml(p.course || '\u2014')}</span>
+                    <span class="repo-year">${escHtml(p.year || '\u2014')}</span>
                 </div>
                 <h4 class="repo-title">${escHtml(p.title)}</h4>
                 <p class="repo-people"><strong>Authors:</strong> ${escHtml(p.authors || 'Unknown')}</p>
@@ -268,7 +354,7 @@ async function initRepository() {
             </article>`).join('');
   }
 
-  // — details modal —
+  // -- details modal --
   function openModal(i, trigger) {
     const p = visible[i];
     if (!p) return;
@@ -277,10 +363,10 @@ async function initRepository() {
     $('paperTitle').textContent = p.title || 'Paper details';
     $('paperBody').innerHTML = `
             <dl class="detail-list">
-                <dt>Course</dt><dd>${escHtml(p.course || '—')}</dd>
-                <dt>Year</dt><dd>${escHtml(p.year || '—')}</dd>
+                <dt>Course</dt><dd>${escHtml(p.course || '\u2014')}</dd>
+                <dt>Year</dt><dd>${escHtml(p.year || '\u2014')}</dd>
                 <dt>Authors</dt><dd>${escHtml(p.authors || 'Unknown')}</dd>
-                <dt>Adviser</dt><dd>${escHtml(p.adviser || '—')}</dd>
+                <dt>Adviser</dt><dd>${escHtml(p.adviser || '\u2014')}</dd>
                 <dt>Added</dt><dd>${formatDate(p.addedAt)}</dd>
             </dl>
             <div class="abstract-block">
@@ -288,12 +374,19 @@ async function initRepository() {
                 <p>${escHtml(p.abstract || 'No abstract available.')}</p>
             </div>
             <div class="modal-foot">
-                <button class="btn-secondary" type="button" id="paperDone">Close</button>
                 ${p.hasFile
         ? `<button class="btn-primary" type="button" data-read="${escHtml(p.id)}">Read paper</button>`
         : `<span class="btn-disabled">No file available</span>`}
+                ${p.hasImrad ? `<button class="btn-secondary" type="button" id="paperImrad">Read IMRAD</button>` : ''}
+                ${p.hasFile ? `<button class="btn-secondary" type="button" id="paperDownload">Download</button>` : ''}
+                ${p.hasImrad ? `<button class="btn-secondary" type="button" id="paperImradDownload">Download IMRAD</button>` : ''}
             </div>`;
-    $('paperDone').addEventListener('click', closeModal);
+    const imBtn = $('paperImrad');
+    if (imBtn) imBtn.addEventListener('click', () => openPaperFile(p.id, imBtn, 'imrad'));
+    const dlBtn = $('paperDownload');
+    if (dlBtn) dlBtn.addEventListener('click', () => downloadPaperFile(p.id, dlBtn));
+    const dlImBtn = $('paperImradDownload');
+    if (dlImBtn) dlImBtn.addEventListener('click', () => downloadPaperFile(p.id, dlImBtn, 'imrad'));
 
     modal.hidden = false;
     document.body.classList.add('no-scroll');
@@ -320,14 +413,14 @@ async function initRepository() {
   modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && !modal.hidden) closeModal(); });
 
-  // — filters —
+  // -- filters --
   $('repoSearch').addEventListener('input', e => { search = e.target.value.trim().toLowerCase(); render(); });
   $('courseFilter').addEventListener('change', e => { course = e.target.value; render(); });
   $('yearFilter').addEventListener('change', e => { year = e.target.value; render(); });
 
-  // — load from the backend —
+  // -- load from the backend --
   async function load() {
-    grid.innerHTML = empty('Loading papers…', '');
+    grid.innerHTML = empty('Loading papers...', '');
     try {
       papers = await fetchPapers();
       populateFilters();
@@ -343,7 +436,7 @@ async function initRepository() {
   await load();
 }
 
-// ── Boot ───────────────────────────────────────────────────────────────────
+// -- Boot --
 
 document.addEventListener('DOMContentLoaded', () => {
   const user = getUser();

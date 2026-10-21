@@ -1,415 +1,524 @@
-/* ==========================================================================
-   AIDEA Student — Repository
-   Page-specific styles only. Shell, sidebar, topbar, dark-mode variables,
-   and the sign-out modal all come from ../dashboard/dashboard.css (loaded
-   first). Everything here reads those same variables, so dark mode and
-   the sidebar's icon-rail collapse at 700px both work automatically.
-   ========================================================================== */
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap');
 
-/* ── Icon button (theme toggle + modal close) ── */
-.icon-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 34px;
-    height: 34px;
-    border-radius: 9px;
-    border: 1px solid var(--border);
-    background: var(--card);
-    color: var(--text);
-    font-size: 14px;
-    cursor: pointer;
-    transition: background-color .15s, border-color .15s;
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0
 }
 
-.icon-btn:hover {
-    background: var(--hover);
+:root {
+    --bg: #f4f6fb;
+    --sidebar-bg: #0f1117;
+    --sidebar-width: 224px;
+    --accent: #f5c518;
+    --text-primary: #1a1d2e;
+    --text-secondary: #6b7280;
+    --white: #ffffff;
+    --border: #e5e7eb;
+    --green: #22c55e;
+    --sidebar-text: #c9ccd6;
+    --radius: 14px;
+    --shadow: 0 2px 16px rgba(0, 0, 0, 0.07)
 }
 
-.i-sun {
-    display: none;
+html,
+body {
+    height: 100%;
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text-primary)
 }
 
-[data-theme="dark"] .i-moon {
-    display: none;
+.layout {
+    display: flex;
+    min-height: 100vh
 }
 
-[data-theme="dark"] .i-sun {
-    display: inline;
+.sidebar {
+    width: var(--sidebar-width);
+    background: var(--sidebar-bg);
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 100;
+    overflow-y: auto
 }
 
-/* ── Toolbar: search + filters ── */
-.toolbar {
+.sidebar-logo {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
     gap: 12px;
-    margin-bottom: 4px;
+    padding: 26px 20px 22px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07)
 }
 
-.search {
-    flex: 1 1 280px;
-    min-width: 0;
+.logo-icon {
+    width: 38px;
+    height: 38px;
+    background: var(--accent);
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: 15px;
+    color: #0f1117
+}
+
+.logo-text h2 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 17px;
+    font-weight: 700;
+    color: #fff
+}
+
+.logo-text p {
+    font-size: 11px;
+    color: var(--sidebar-text);
+    margin-top: 1px
+}
+
+.sidebar-nav {
+    padding: 14px 12px;
+    flex: 1
+}
+
+.nav-group {
+    margin-bottom: 20px
+}
+
+.nav-label {
+    display: block;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    color: rgba(255, 255, 255, 0.25);
+    text-transform: uppercase;
+    padding: 0 8px;
+    margin-bottom: 6px
+}
+
+.nav-item {
     display: flex;
     align-items: center;
     gap: 10px;
-    height: 40px;
-    padding: 0 14px;
-    background: var(--card);
-    color: var(--muted);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    transition: border-color .15s, box-shadow .15s;
-}
-
-.search:focus-within {
-    border-color: var(--gold);
-    box-shadow: 0 0 0 3px rgba(201, 168, 76, 0.18);
-}
-
-.search i {
-    flex-shrink: 0;
-    font-size: 13px;
-}
-
-.search input {
-    flex: 1;
-    min-width: 0;
-    height: 100%;
-    border: 0;
-    outline: none;
-    background: transparent;
-    color: var(--text);
-    font: inherit;
+    padding: 9px 12px;
+    border-radius: 9px;
+    color: var(--sidebar-text);
+    text-decoration: none;
     font-size: 13.5px;
+    font-weight: 500;
+    transition: background .15s, color .15s;
+    margin-bottom: 2px
 }
 
-.search input::placeholder {
-    color: var(--muted);
+.nav-item:hover {
+    background: rgba(245, 197, 24, 0.10);
+    color: #fff
 }
 
-.filter-select {
-    height: 40px;
-    padding: 0 12px;
-    font: inherit;
-    font-size: 13.5px;
-    color: var(--text);
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    cursor: pointer;
-    transition: border-color .15s, box-shadow .15s;
+.nav-item.active {
+    background: rgba(245, 197, 24, 0.15);
+    color: var(--accent)
 }
 
-.filter-select:focus {
-    outline: none;
-    border-color: var(--gold);
-    box-shadow: 0 0 0 3px rgba(201, 168, 76, 0.18);
+.nav-icon {
+    font-size: 15px;
+    width: 20px;
+    text-align: center
 }
 
-.filter-select option {
-    background: var(--card);
-    color: var(--text);
+.sidebar-footer {
+    padding: 14px 20px;
+    border-top: 1px solid rgba(255, 255, 255, 0.07)
 }
 
-.result-count {
-    color: var(--muted);
-    font-size: 13px;
-    margin: 10px 0 14px;
-}
-
-/* ── Card action buttons ── */
-.btn-read {
-    display: inline-flex;
+.user-card {
+    display: flex;
     align-items: center;
-    justify-content: center;
-    background: var(--gold);
-    color: #0f1117;
-    border: none;
-    padding: 7px 14px;
-    border-radius: 7px;
-    font-size: 12px;
-    font-weight: 700;
+    gap: 10px;
     text-decoration: none;
     cursor: pointer;
-    font-family: inherit;
-    transition: background .15s;
+    padding: 6px 0
 }
 
-.btn-read:hover {
-    background: var(--gold-light);
-}
-
-.btn-disabled {
-    display: inline-flex;
+.user-avatar {
+    width: 36px;
+    height: 36px;
+    background: var(--accent);
+    border-radius: 50%;
+    display: flex;
     align-items: center;
-    padding: 7px 14px;
-    border-radius: 7px;
-    background: var(--bg);
-    color: var(--muted);
-    border: 1px solid var(--border);
-    font-size: 12px;
-    font-weight: 600;
-    cursor: not-allowed;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 13px;
+    color: #0f1117;
+    flex-shrink: 0
 }
 
-/* ── Grid ── */
+.user-info h4 {
+    font-size: 13px;
+    font-weight: 600;
+    color: #fff
+}
+
+.user-info p {
+    font-size: 11px;
+    color: var(--sidebar-text)
+}
+
+.main-content {
+    margin-left: var(--sidebar-width);
+    flex: 1;
+    padding: 32px 36px
+}
+
+.topbar {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 24px
+}
+
+.topbar h1 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 26px;
+    font-weight: 700
+}
+
+.subtitle {
+    font-size: 13.5px;
+    color: var(--text-secondary);
+    margin-top: 2px
+}
+
+.topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 12px
+}
+
+.status-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--green);
+    background: rgba(34, 197, 94, 0.1);
+    padding: 6px 12px;
+    border-radius: 20px
+}
+
+.dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--green)
+}
+
+.btn-ghost {
+    font-size: 13px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    padding: 7px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--white);
+    font-family: inherit;
+    font-weight: 500
+}
+
+.btn-ghost:hover {
+    background: #f0f0f0
+}
+
+.btn-signout {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 7px 16px;
+    border-radius: 8px;
+    border: none;
+    background: #1a1d2e;
+    color: #fff;
+    cursor: pointer;
+    font-family: inherit
+}
+
+.btn-signout:hover {
+    background: #2d3148
+}
+
+.search-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--white);
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 16px;
+    margin-bottom: 14px;
+    transition: border-color .15s
+}
+
+.search-bar:focus-within {
+    border-color: var(--accent)
+}
+
+.search-bar input {
+    flex: 1;
+    border: none;
+    outline: none;
+    font-size: 14px;
+    font-family: inherit;
+    background: transparent
+}
+
+.repo-filters {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 22px
+}
+
+.repo-filters select {
+    padding: 9px 14px;
+    border: 1.5px solid var(--border);
+    border-radius: 9px;
+    font-size: 13.5px;
+    font-family: inherit;
+    outline: none;
+    background: var(--white);
+    cursor: pointer;
+    transition: border-color .15s
+}
+
+.repo-filters select:focus {
+    border-color: var(--accent)
+}
+
 .repo-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
-    gap: 16px;
-    margin-top: 18px;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 18px
 }
 
 .repo-card {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    min-width: 0;
-    padding: 20px;
-    background: var(--card);
-    border: 1px solid var(--border);
+    background: var(--white);
     border-radius: var(--radius);
+    padding: 22px;
     box-shadow: var(--shadow);
-    transition: border-color .15s, transform .15s, box-shadow .15s;
+    transition: transform .15s, box-shadow .15s;
+    cursor: pointer
 }
 
 .repo-card:hover {
-    border-color: rgba(201, 168, 76, 0.4);
-    box-shadow: var(--shadow-hover);
-    transform: translateY(-2px);
+    transform: translateY(-3px);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.11)
 }
 
-.repo-meta {
+.repo-card-header {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
     gap: 10px;
+    margin-bottom: 10px
 }
 
 .repo-course {
-    padding: 3px 10px;
-    border-radius: 999px;
-    background: rgba(201, 168, 76, 0.15);
+    background: rgba(245, 197, 24, 0.15);
     color: #9a7b00;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 700;
-    white-space: nowrap;
+    padding: 3px 10px;
+    border-radius: 20px;
+    letter-spacing: .3px;
+    white-space: nowrap
 }
 
-[data-theme="dark"] .repo-course {
-    color: var(--gold-light);
-}
-
-.repo-year {
-    color: var(--muted);
-    font-size: 12.5px;
-    font-weight: 600;
-}
-
-.repo-title {
-    font-family: var(--display);
-    font-size: 15px;
+.repo-card h4 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 14.5px;
     font-weight: 700;
     line-height: 1.4;
-    color: var(--text);
-    overflow-wrap: anywhere;
-    display: -webkit-box;
-    -webkit-line-clamp: 3;
-    line-clamp: 3;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
+    margin-bottom: 8px
 }
 
-.repo-people {
-    color: var(--muted);
+.repo-authors {
     font-size: 12.5px;
-    overflow-wrap: anywhere;
-}
-
-.repo-people strong {
-    color: var(--text);
-    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 8px
 }
 
 .repo-abstract {
-    color: var(--muted);
-    font-size: 13px;
+    font-size: 12.5px;
+    color: var(--text-secondary);
     line-height: 1.6;
-    overflow-wrap: anywhere;
     display: -webkit-box;
     -webkit-line-clamp: 3;
-    line-clamp: 3;
     -webkit-box-orient: vertical;
-    overflow: hidden;
+    overflow: hidden
 }
 
 .repo-footer {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 10px;
-    margin-top: auto;
-    padding-top: 14px;
-    border-top: 1px solid var(--border);
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border)
+}
+
+.repo-year {
+    font-size: 12px;
+    color: #aaa;
+    font-weight: 500
+}
+
+.btn-read {
+    background: var(--accent);
+    color: #0f1117;
+    border: none;
+    padding: 7px 14px;
+    border-radius: 7px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background .15s
+}
+
+.btn-read:hover {
+    background: #e0b015
+}
+
+/* ══════════════════════════════════════════
+   ADD THESE TO YOUR EXISTING repository.css
+══════════════════════════════════════════ */
+
+.repo-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+
+.repo-year-badge {
+    font-size: 11px;
+    color: #888;
+}
+
+.repo-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .repo-added {
-    color: var(--muted);
+    font-size: 11px;
+    color: #666;
+}
+
+.btn-read {
+    padding: 6px 14px;
+    border-radius: 8px;
+    background: #6366f1;
+    color: #fff;
+    border: none;
     font-size: 12px;
-}
-
-.repo-actions {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-.repo-empty {
-    grid-column: 1 / -1;
-    padding: 56px 16px;
-    text-align: center;
-    background: var(--card);
-    border: 1px dashed var(--border);
-    border-radius: var(--radius);
-}
-
-.repo-empty strong {
-    display: block;
-    font-size: 15px;
-    font-weight: 700;
-    color: var(--text);
-}
-
-.repo-empty p {
-    margin-top: 4px;
-    color: var(--muted);
-    font-size: 13.5px;
-}
-
-/* ── Details modal ── */
-.modal-wide {
-    width: min(640px, 100%);
-    max-width: 640px;
-    max-height: calc(100dvh - 40px);
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    text-align: left;
-    padding: 24px;
-}
-
-.modal-wide .modal-title {
-    font-size: 17px;
-}
-
-.modal-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 16px;
-}
-
-.modal-head .modal-title {
-    margin-bottom: 0;
-    overflow-wrap: anywhere;
-    line-height: 1.35;
-}
-
-.detail-list {
-    display: grid;
-    grid-template-columns: 96px minmax(0, 1fr);
-    gap: 10px 16px;
-    font-size: 13.5px;
-}
-
-.detail-list dt {
-    color: var(--muted);
     font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
 }
 
-.detail-list dd {
-    color: var(--text);
-    overflow-wrap: anywhere;
+.btn-read:hover {
+    background: #4f52c9;
 }
 
-.abstract-block {
-    margin-top: 18px;
-    padding-top: 16px;
-    border-top: 1px solid var(--border);
-}
+/* ══════════════════════════════════════════
+   ADD THESE TO YOUR EXISTING repository.css
+══════════════════════════════════════════ */
 
-.abstract-block h4 {
-    font-size: 13px;
-    font-weight: 700;
-    color: var(--text);
-    margin-bottom: 8px;
-}
-
-.abstract-block p {
-    font-size: 14px;
-    color: var(--text);
-    line-height: 1.75;
-    white-space: pre-line;
-    overflow-wrap: anywhere;
-}
-
-.modal-foot {
+.repo-card-header {
     display: flex;
-    justify-content: flex-end;
-    gap: 10px;
-    flex-wrap: wrap;
-    margin-top: 22px;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
 }
 
-/* ── Responsive ── */
-@media (max-width: 720px) {
-    .search {
-        flex-basis: 100%;
-    }
-
-    .toolbar .filter-select {
-        flex: 1 1 140px;
-        min-width: 0;
-    }
-
-    .repo-card {
-        padding: 16px;
-    }
-
-    .repo-actions {
-        width: 100%;
-    }
-
-    .repo-actions>* {
-        flex: 1;
-        justify-content: center;
-    }
-
-    .detail-list {
-        grid-template-columns: 1fr;
-        gap: 2px;
-    }
-
-    .detail-list dd {
-        margin-bottom: 10px;
-    }
+.repo-year-badge {
+    font-size: 11px;
+    color: #888;
 }
 
-@media (max-width: 420px) {
-    .modal-foot>* {
-        flex: 1;
-        justify-content: center;
-    }
-
-    .modal-wide {
-        padding: 18px 16px;
-    }
+.repo-adviser {
+    font-size: 12px;
+    color: #888;
+    margin: 0 0 6px;
 }
 
-@media (hover: none) {
-    .repo-card:hover {
-        transform: none;
-    }
+.repo-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    gap: 8px;
+}
+
+.repo-added {
+    font-size: 11px;
+    color: #666;
+    flex-shrink: 0;
+}
+
+/* Primary "Read Paper" — links to actual file */
+.btn-read {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 14px;
+    border-radius: 8px;
+    background: #6366f1;
+    color: #fff;
+    border: none;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background 0.2s;
+    white-space: nowrap;
+}
+
+.btn-read:hover {
+    background: #4f52c9;
+}
+
+/* Secondary "Details" button */
+.btn-read-secondary {
+    background: rgba(255, 255, 255, 0.08);
+    color: #ccc;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.btn-read-secondary:hover {
+    background: rgba(255, 255, 255, 0.14);
+    color: #fff;
+}
+
+/* Disabled state when no file is attached */
+.btn-read-disabled {
+    background: rgba(255, 255, 255, 0.04);
+    color: #555;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    cursor: not-allowed;
 }

@@ -5,7 +5,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0a1a3f" />
-    <title>My Profile — AIDEA</title>
+    <title>My Profile � AIDEA</title>
 
     <!-- Apply saved / system theme BEFORE paint (same student-side key as the other pages) -->
     <script>
@@ -26,6 +26,8 @@
     <!-- Shared shell first, then this page's styles -->
     <link rel="stylesheet" href="../dashboard/dashboard.css" />
     <link rel="stylesheet" href="my-profile.css" />
+    <link rel="icon" type="image/png" sizes="32x32" href="../shared/logo-32.png" />
+    <link rel="apple-touch-icon" href="../shared/logo-180.png" />
 </head>
 
 <body>
@@ -33,15 +35,7 @@
     <!-- SIDEBAR -->
     <aside class="sidebar" id="sidebar" aria-label="Main navigation">
         <a class="sidebar-brand" href="../dashboard/dashboard.html" aria-label="AIDEA home">
-            <span class="brand-mark" aria-hidden="true">
-                <svg viewBox="0 0 32 32" width="32" height="32" fill="none">
-                    <rect width="32" height="32" rx="9" fill="#FFC72C" />
-                    <path d="M9 22.5 16 8l7 14.5" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round"
-                        stroke-linejoin="round" />
-                    <path d="M11.8 18h8.4" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round" />
-                    <circle cx="16" cy="8" r="1.9" fill="#2563eb" />
-                </svg>
-            </span>
+            <span class="brand-mark" aria-hidden="true"><img src="../shared/logo-64.png" alt="" width="32" height="32" style="display:block;object-fit:contain"></span>
             <span class="brand-text">
                 <span class="brand-name">AIDEA</span>
                 <span class="brand-sub">Norzagaray College</span>
@@ -56,7 +50,7 @@
 
             <p class="nav-heading">Main</p>
             <nav class="nav-group">
-                <a href="../submit thesis/submit-thesis.html">Submit Thesis</a>
+                <a href="../submit thesis/submit-thesis.html">Submit Documents</a>
                 <a href="../my submission/my-submissions.html">My Submissions</a>
             </nav>
 
@@ -64,7 +58,7 @@
             <nav class="nav-group">
                 <a href="../repository/repository.html">Repository</a>
                 <a href="../avail services/avail-services.html">Avail Services</a>
-                <a href="../payments reciepts/payments-reciepts.html">Payments &amp; Receipts</a>
+                <a href="../payments reciepts/payments-reciepts.html">Requests</a>
             </nav>
 
             <p class="nav-heading">Feedback</p>
@@ -162,8 +156,8 @@
                     </div>
 
                     <div class="profile-stats">
-                        <div class="pstat"><strong id="pstat-submissions">—</strong><span>Submissions</span></div>
-                        <div class="pstat"><strong id="pstat-approved">—</strong><span>Approved</span></div>
+                        <div class="pstat"><strong id="pstat-submissions">�</strong><span>Submissions</span></div>
+                        <div class="pstat"><strong id="pstat-approved">�</strong><span>Approved</span></div>
                     </div>
                 </section>
 
@@ -186,15 +180,9 @@
                                     <input type="text" id="lastName" autocomplete="family-name" disabled />
                                 </div>
                             </div>
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label for="course">Course</label>
-                                    <input type="text" id="course" disabled />
-                                </div>
-                                <div class="form-group">
-                                    <label for="email">Email address</label>
-                                    <input type="email" id="email" autocomplete="email" disabled />
-                                </div>
+                            <div class="form-group">
+                                <label for="email">Email address</label>
+                                <input type="email" id="email" autocomplete="email" disabled />
                             </div>
 
                             <div class="form-actions" id="formActions" hidden>
@@ -265,6 +253,7 @@
     </div>
 
     <script src="my-profile.js"></script>
+<script src="../shared/sidebar_toggle.js"></script>
 </body>
 
 </html>

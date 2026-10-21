@@ -24,6 +24,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
         rel="stylesheet" />
     <link rel="stylesheet" href="Thesis_submissions.css" />
+    <link rel="icon" type="image/png" sizes="32x32" href="../shared/logo-32.png" />
+    <link rel="apple-touch-icon" href="../shared/logo-180.png" />
 </head>
 
 <body>
@@ -31,15 +33,7 @@
     <!-- SIDEBAR -->
     <aside class="sidebar" id="sidebar" aria-label="Main navigation">
         <a class="sidebar-brand" href="../dashboard/dashboard.html" aria-label="AIDEA Admin home">
-            <span class="brand-mark" aria-hidden="true">
-                <svg viewBox="0 0 32 32" width="32" height="32" fill="none">
-                    <rect width="32" height="32" rx="9" fill="#FFC72C" />
-                    <path d="M9 22.5 16 8l7 14.5" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round"
-                        stroke-linejoin="round" />
-                    <path d="M11.8 18h8.4" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round" />
-                    <circle cx="16" cy="8" r="1.9" fill="#2563eb" />
-                </svg>
-            </span>
+            <span class="brand-mark" aria-hidden="true"><img src="../shared/logo-64.png" alt="" width="32" height="32" style="display:block;object-fit:contain"></span>
             <span class="brand-text">
                 <span class="brand-name">AIDEA Admin</span>
                 <span class="brand-sub">Norzagaray College</span>
@@ -50,24 +44,22 @@
             <p class="nav-heading">Overview</p>
             <nav class="nav-group">
                 <a href="../dashboard/dashboard.html">Dashboard</a>
-                <a href="../Report generator/Report_generator.html">Report Generator</a>
             </nav>
 
             <p class="nav-heading">Management</p>
             <nav class="nav-group">
-                <a href="../All students/all-students.html">All Students</a>
+                <a href="../All students/all-students.html">Users</a>
                 <a href="../Thesis submissions/Thesis_submissions.html" class="active" aria-current="page">Thesis
                     Submissions</a>
                 <a href="../File transfer/file_transfer.html">File Transfer</a>
-                <a href="../Payments/payment.html">Payments</a>
-                <a href="../Receipts/Receipts.html">Receipts</a>
+                <a href="../Payments/payment.html">Requests</a>
+                <a href="../Receipts/Receipts.html">Certificate</a>
                 <a href="../Services pricing/Services_pricing.html">Services &amp; Pricing</a>
             </nav>
 
             <p class="nav-heading">Quality</p>
             <nav class="nav-group">
                 <a href="../Satisfaction reports/Satisfaction_reports.html">Satisfaction Reports</a>
-                <a href="../Price audit log/Price_audit_log.html">Price Audit Log</a>
                 <a href="../formatting/formatting.html">Format Templates</a>
             </nav>
 
@@ -233,61 +225,36 @@
                         id="viewService"></span></div>
                 <div class="detail-row"><span class="detail-label">Submitted</span><span class="detail-value"
                         id="viewDate"></span></div>
-                <div class="detail-row"><span class="detail-label">Status</span><span class="detail-value"
-                        id="viewStatus"></span></div>
+                <div class="detail-row"><span class="detail-label">Current status</span><span class="detail-value" id="reviewCurrentStatus"></span></div>
+                <span id="viewStatus" hidden></span>
                 <div class="detail-col"><span class="detail-label">Abstract</span>
                     <p class="detail-abstract" id="viewAbstract"></p>
                 </div>
                 <div class="detail-col">
-                    <span class="detail-label">Submitted file</span>
+                    <span class="detail-label">File preview</span>
                     <div id="viewFileSection"></div>
                 </div>
-            </div>
-            <div class="modal-actions">
-                <button class="modal-btn modal-btn-cancel" type="button" data-close="viewModal">Close</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- REVIEW MODAL -->
-    <div class="modal-backdrop" id="reviewModal" hidden>
-        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="reviewModalTitle">
-            <div class="modal-head">
-                <h3 class="modal-title" id="reviewModalTitle">Review thesis</h3>
-                <button class="modal-x" type="button" data-close="reviewModal" aria-label="Close">
-                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"
-                        stroke-linecap="round">
-                        <path d="M6 6l12 12M18 6L6 18" />
-                    </svg>
-                </button>
-            </div>
-            <div class="modal-body">
-                <div class="detail-row"><span class="detail-label">Title</span><span class="detail-value"
-                        id="reviewTitle"></span></div>
-                <div class="detail-row"><span class="detail-label">Student</span><span class="detail-value"
-                        id="reviewStudent"></span></div>
-                <div class="detail-row"><span class="detail-label">Current status</span><span class="detail-value"
-                        id="reviewCurrentStatus"></span></div>
                 <div class="detail-col">
                     <span class="detail-label">Set status</span>
                     <div class="status-options">
                         <button class="btn-status approved" type="button" data-status="Approved">Approve</button>
-                        <button class="btn-status pending" type="button" data-status="Pending">Mark pending</button>
+                        <button class="btn-status pending" type="button" data-status="Pending">Mark as pending</button>
                         <button class="btn-status rejected" type="button" data-status="Rejected">Reject</button>
                     </div>
                 </div>
                 <div class="detail-col">
                     <label class="detail-label" for="reviewRemarks">Remarks</label>
-                    <textarea class="form-control" id="reviewRemarks" rows="4"
-                        placeholder="Add review comments or feedback"></textarea>
+                    <textarea class="form-control" id="reviewRemarks" rows="4" placeholder="Add review comments or feedback"></textarea>
                 </div>
-            </div>
-            <div class="modal-actions">
-                <button class="modal-btn modal-btn-cancel" type="button" data-close="reviewModal">Cancel</button>
-                <button class="modal-btn modal-btn-primary" type="button" id="submitReviewBtn">Submit review</button>
+                <div style="display:flex;justify-content:flex-end;margin-top:8px">
+                    <button class="modal-btn modal-btn-primary" type="button" id="submitReviewBtn">Submit review</button>
+                </div>
             </div>
         </div>
     </div>
+
+    <!-- REVIEW MODAL (moved into the View modal; empty stub keeps old references safe) -->
+    <div class="modal-backdrop" id="reviewModal" hidden></div>
 
     <!-- REPOSITORY MODAL -->
     <div class="modal-backdrop" id="repoModal" hidden>
@@ -318,6 +285,7 @@
     </div>
 
     <script src="Thesis_submissions.js?v=3"></script>
+<script src="../shared/sidebar_toggle.js"></script>
 </body>
 
 </html>

@@ -79,6 +79,18 @@ function initSignOutModal() {
 
 //  Utilities 
 
+function reviewedUrlsOf(t) {
+    return (Array.isArray(t.reviewed_file_urls) && t.reviewed_file_urls.length)
+        ? t.reviewed_file_urls
+        : (t.reviewed_file_url ? [t.reviewed_file_url] : []);
+}
+function reviewedChips(t, label) {
+    const urls = reviewedUrlsOf(t);
+    return urls.map(function (u, i) {
+        return '<a class="file-chip" href="' + escHtml(u) + '" target="_blank" rel="noopener">' + ICON_DOC + ' ' + label + (urls.length > 1 ? ' ' + (i + 1) : '') + '</a>';
+    }).join('');
+}
+
 function escHtml(str) {
     return String(str ?? '')
         .replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -257,6 +269,8 @@ function renderReviewerIdentity(user) {
     setText('footerName', fullName);
     setText('footerRole', roleLabel);
     setText('roleBadge', roleLabel);
+    // GRAM-NOFT: grammarians cannot use this page
+    if (user.role === 'grammarian') { window.location.replace('../thesis reviewer/Thesis_reviewer.html'); }
 }
 
 //  Tabs (Send / Received) 
@@ -297,6 +311,95 @@ function initTabs() {
 
 const ICON_DOC = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>`;
 const ICON_EYE = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>`;
+function renderAdminNote(raw) {
+    if (!raw) return '';
+    if (!document.getElementById('rn-styles')) {
+        const st = document.createElement('style');
+        st.id = 'rn-styles';
+        st.textContent = [
+            '.rn-wrap{margin-top:14px;display:flex;flex-direction:column;gap:12px}',
+            '.rn-note{border-left:3px solid #f5b301;background:rgba(245,179,1,.10);padding:10px 14px;border-radius:0 8px 8px 0}',
+            '.rn-title{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;opacity:.65;margin-bottom:4px}',
+            '.rn-text{font-size:14px;line-height:1.5;white-space:pre-wrap;word-break:break-word}',
+            '.rn-details{border:1px solid rgba(127,127,127,.25);border-radius:10px;padding:14px 16px;background:rgba(127,127,127,.05)}',
+            '.rn-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px 28px;margin-top:10px}',
+            '.rn-item{min-width:0}',
+            '.rn-label{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;opacity:.6;margin-bottom:2px}',
+            '.rn-value{font-size:14px;font-weight:600;line-height:1.4;word-break:break-word}'
+        ].join('');
+        document.head.appendChild(st);
+    }
+    const text = String(raw);
+    const marker = 'REQUEST DETAILS';
+    const at = text.indexOf(marker);
+    const noteText = (at >= 0 ? text.slice(0, at) : text).trim();
+    let html = '';
+    if (noteText) {
+        html += '<div class="rn-note"><div class="rn-title">Admin\'s note</div><div class="rn-text">' + escHtml(noteText) + '</div></div>';
+    }
+    if (at >= 0) {
+        const items = text.slice(at + marker.length).split('\n')
+            .map(function (l) { return l.trim(); })
+            .filter(Boolean)
+            .map(function (line) {
+                const i = line.indexOf(': ');
+                const label = i > 0 ? line.slice(0, i) : '';
+                const value = i > 0 ? line.slice(i + 2) : line;
+                return '<div class="rn-item"><div class="rn-label">' + escHtml(label || 'Info') + '</div><div class="rn-value">' + escHtml(value || '-') + '</div></div>';
+            });
+        if (items.length) {
+            html += '<div class="rn-details"><div class="rn-title">Request details</div><div class="rn-grid">' + items.join('') + '</div></div>';
+        }
+    }
+    return '<div class="rn-wrap">' + stripStatusItem(html) + '</div>';
+}
+function splitReviewTitle(t) {
+    const title = String((t && t.title) || '');
+    if (t && t.file_label) return { title: title, label: t.file_label };
+    const m = title.match(/^(.+?)\s[-\u2013\u2014]\s(.+?)\s[-\u2013\u2014]\s(.+)$/);
+    if (m) return { title: m[1] + ' - ' + m[2], label: m[3] };
+    return { title: title, label: '' };
+}
+function linkifyLabel(label) {
+    return escHtml(String(label)).replace(/(https?:\/\/[^\s<]+)/g, function (u) {
+        return '<a href="' + u + '" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;font-weight:600">' + u + '</a>';
+    });
+}
+function renderFileRows(t) {
+    let items = Array.isArray(t.file_items) ? t.file_items.filter(function (i) { return i && i.url; }) : [];
+    if (!items.length && t.file_url) items = [{ url: t.file_url, label: splitReviewTitle(t).label }];
+    if (!items.length) return '';
+    return '<div class="review-card-files" style="display:flex;flex-direction:column;gap:8px">' + items.map(function (i, n) {
+        const dl = items.length > 1 ? '<a class="action-btn" href="' + escHtml(i.url) + '" download>Download</a>' : '';
+        const name = items.length > 1 ? 'View file' : 'Original thesis file';
+        return '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px"><a class="file-chip" href="' + escHtml(i.url) + '" target="_blank" rel="noopener">' + ICON_DOC + ' ' + name + '</a>' + dl + renderFileLabel(i.label) + '</div>';
+    }).join('') + '</div>';
+}
+function stripStatusItem(html) {
+    try {
+        const box = document.createElement('div');
+        box.innerHTML = html;
+        box.querySelectorAll('.rn-grid *').forEach(function (n) {
+            const par = n.parentElement;
+            if (n.children.length === 0 && /^status:?$/i.test((n.textContent || '').trim()) && par && par.parentElement && par.parentElement.classList.contains('rn-grid')) par.remove();
+        });
+        return box.innerHTML;
+    } catch (e) { return html; }
+}
+function renderFileLabel(label) {
+    if (!label) return '';
+    if (!document.getElementById('fl-styles')) {
+        const st = document.createElement('style');
+        st.id = 'fl-styles';
+        st.textContent = [
+            '.fl-caption{display:inline-flex;align-items:baseline;gap:8px;flex:1 1 240px;min-width:0;padding:6px 12px;border-left:3px solid rgba(127,127,127,.45);background:rgba(127,127,127,.06);border-radius:0 8px 8px 0}',
+            '.fl-title{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;opacity:.6;white-space:nowrap}',
+            '.fl-text{font-size:13px;line-height:1.45;word-break:break-word}'
+        ].join('');
+        document.head.appendChild(st);
+    }
+    return '<span class="fl-caption"><span class="fl-title">Uploaded for</span><span class="fl-text">' + linkifyLabel(label) + '</span></span>';
+}
 const ICON_DOWNLOAD = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>`;
 const ICON_CHECK = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>`;
 
@@ -315,8 +418,9 @@ async function loadThesisOptions() {
             return;
         }
 
-        select.innerHTML = '<option value="" disabled selected>Select an assigned thesis\u2026</option>' + items.map(t => `
-            <option value="${t.id}">${escHtml(t.title || 'Untitled thesis')} \u2014 ${escHtml(t.student_name || t.student?.name || '\u2014')}</option>
+        items.sort((a, b) => (a.id || 0) - (b.id || 0));
+        select.innerHTML = items.map((t, i) => `
+            <option value="${t.id}"${i === 0 ? ' selected' : ''}>${escHtml(splitReviewTitle(t).title || 'Untitled thesis')} \u2014 ${escHtml(t.student_name || t.student?.name || '\u2014')}${i === 0 ? ' (next in line)' : ''}</option>
         `).join('');
     } catch {
         select.innerHTML = '<option value="" disabled selected>Couldn\u2019t load your assignments</option>';
@@ -384,7 +488,7 @@ async function loadSent() {
                 <div class="review-card-body">
                     <div class="review-card-top">
                         <div>
-                            <div class="review-card-title">${escHtml(t.title || 'Untitled thesis')}</div>
+                            <div class="review-card-title">${escHtml(splitReviewTitle(t).title || 'Untitled thesis')}</div>
                             <div class="review-card-meta">
                                 <span>${escHtml(t.student_name || t.student?.name || '\u2014')}</span>
                                 <span>&middot;</span>
@@ -396,11 +500,11 @@ async function loadSent() {
                         <span class="badge badge-success">Sent</span>
                     </div>
 
-                    ${t.reviewer_note ? `<div class="review-card-note"><span>Your note:</span> ${escHtml(t.reviewer_note)}</div>` : ''}
+                    ${t.reviewer_note ? `<div class="review-card-note" style="white-space:pre-line"><span>Your note:</span> ${escHtml(t.reviewer_note)}</div>` : ''}
 
                     <div class="review-card-files">
                         ${t.file_url ? `<a class="file-chip" href="${escHtml(t.file_url)}" target="_blank" rel="noopener">${ICON_DOC} Original file</a>` : ''}
-                        ${t.reviewed_file_url ? `<a class="file-chip" href="${escHtml(t.reviewed_file_url)}" target="_blank" rel="noopener">${ICON_DOC} Your reviewed file</a>` : ''}
+                        ${reviewedChips(t, 'Your reviewed file')}
                     </div>
 
                     <div class="review-card-actions">
@@ -441,7 +545,7 @@ async function loadReceived() {
                 <div class="review-card-body">
                     <div class="review-card-top">
                         <div>
-                            <div class="review-card-title">${escHtml(t.title || 'Untitled thesis')}</div>
+                            <div class="review-card-title">${escHtml(splitReviewTitle(t).title || 'Untitled thesis')}</div>
                             <div class="review-card-meta">
                                 <span>${escHtml(t.student_name || t.student?.name || '\u2014')}</span>
                                 <span>&middot;</span>
@@ -453,17 +557,14 @@ async function loadReceived() {
                         <span class="badge badge-warning">Awaiting your review</span>
                     </div>
 
-                    ${t.note ? `<div class="review-card-note"><span>Admin's note:</span> ${escHtml(t.note)}</div>` : ''}
+                    ${renderAdminNote(t.note)}
 
-                    ${t.file_url ? `
-                    <div class="review-card-files">
-                        <a class="file-chip" href="${escHtml(t.file_url)}" target="_blank" rel="noopener">
-                            ${ICON_DOC} Original thesis file
-                        </a>
-                    </div>` : ''}
+                    ${renderFileRows(t)}
+
+                    
 
                     <div class="review-card-actions">
-                        ${t.file_url ? `
+                        ${(t.file_url && !(t.file_items && t.file_items.length > 1)) ? `
                         <a class="action-btn" href="${escHtml(t.file_url)}" target="_blank" rel="noopener">${ICON_EYE} View</a>
                         <a class="action-btn" href="${escHtml(t.file_url)}" download>${ICON_DOWNLOAD} Download</a>
                         ` : ''}
@@ -486,11 +587,58 @@ async function loadReceived() {
 //  Send form 
 
 let selectedFile = null;
+let sendQueue = [];
+const MAX_REVIEW_FILES = 5;
+const MAX_REVIEW_MB = 20;
+
+function renderQueue() {
+    const list = document.getElementById('sendQueue');
+    if (!list) return;
+    list.innerHTML = '';
+    sendQueue.forEach(function (f, idx) {
+        const li = document.createElement('li');
+        li.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;';
+        const span = document.createElement('span');
+        span.textContent = f.name;
+        const x = document.createElement('button');
+        x.type = 'button';
+        x.textContent = '\u2715';
+        x.setAttribute('aria-label', 'Remove');
+        x.style.cssText = 'border:0;background:none;cursor:pointer;font-size:14px;color:inherit;';
+        x.addEventListener('click', function () { sendQueue.splice(idx, 1); renderQueue(); });
+        li.appendChild(span);
+        li.appendChild(x);
+        list.appendChild(li);
+    });
+    const dropLabel = document.getElementById('fileDropLabel');
+    if (sendQueue.length) {
+        dropLabel.classList.add('has-file');
+        setText('fileDropText', sendQueue.length + (sendQueue.length === 1 ? ' file' : ' files') + ' attached \u2014 click to add more');
+    } else {
+        resetFileDrop();
+    }
+}
+
+function addFiles(files) {
+    for (const f of files) {
+        if (sendQueue.length >= MAX_REVIEW_FILES) {
+            showMsg('sendMsg', 'You can attach up to ' + MAX_REVIEW_FILES + ' files.', 'error');
+            break;
+        }
+        if (f.size > MAX_REVIEW_MB * 1024 * 1024) {
+            showMsg('sendMsg', f.name + ' is over ' + MAX_REVIEW_MB + ' MB.', 'error');
+            continue;
+        }
+        const dup = sendQueue.some(function (q) { return q.name === f.name && q.size === f.size; });
+        if (!dup) sendQueue.push(f);
+    }
+    renderQueue();
+}
 
 function resetFileDrop() {
     const label = document.getElementById('fileDropLabel');
     label.classList.remove('has-file', 'is-dragover');
-    setText('fileDropText', 'Click to choose a file, or drag it here');
+    setText('fileDropText', 'Click to choose files, or drag them here');
 }
 
 function initSendForm() {
@@ -498,13 +646,8 @@ function initSendForm() {
     const dropLabel = document.getElementById('fileDropLabel');
 
     fileInput.addEventListener('change', () => {
-        selectedFile = fileInput.files[0] || null;
-        if (selectedFile) {
-            dropLabel.classList.add('has-file');
-            setText('fileDropText', selectedFile.name);
-        } else {
-            resetFileDrop();
-        }
+        addFiles(Array.prototype.slice.call(fileInput.files));
+        fileInput.value = '';
     });
 
     ['dragover', 'dragenter'].forEach(evt =>
@@ -512,13 +655,7 @@ function initSendForm() {
     ['dragleave', 'drop'].forEach(evt =>
         dropLabel.addEventListener(evt, e => { e.preventDefault(); dropLabel.classList.remove('is-dragover'); }));
     dropLabel.addEventListener('drop', e => {
-        const file = e.dataTransfer.files[0];
-        if (file) {
-            fileInput.files = e.dataTransfer.files;
-            selectedFile = file;
-            dropLabel.classList.add('has-file');
-            setText('fileDropText', file.name);
-        }
+        addFiles(Array.prototype.slice.call(e.dataTransfer.files));
     });
 
     document.getElementById('sendForm').addEventListener('submit', async e => {
@@ -529,6 +666,10 @@ function initSendForm() {
             showMsg('sendMsg', 'Choose which assigned thesis to send back first.', 'error');
             return;
         }
+        if (!sendQueue.length) {
+            showMsg('sendMsg', 'Attach at least one file first.', 'error');
+            return;
+        }
 
         const submitBtn = document.getElementById('sendSubmit');
         setBtnLoading(submitBtn, true);
@@ -536,7 +677,7 @@ function initSendForm() {
 
         const body = new FormData();
         body.append('note', document.getElementById('sendNote').value.trim());
-        if (selectedFile) body.append('reviewed_file', selectedFile);
+        sendQueue.forEach(f => body.append('reviewed_files[]', f));
 
         try {
             const res = await fetch(`${ADMIN_API}/reviewer/assignments/${assignmentId}/complete`, {
@@ -553,7 +694,8 @@ function initSendForm() {
 
             document.getElementById('sendForm').reset();
             selectedFile = null;
-            resetFileDrop();
+            sendQueue = [];
+            renderQueue();
             showMsg('sendMsg', 'Sent to admin!', 'success');
             await Promise.all([loadThesisOptions(), loadSent(), loadReceived()]);
         } catch (err) {

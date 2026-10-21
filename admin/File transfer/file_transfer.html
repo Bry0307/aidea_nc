@@ -27,6 +27,8 @@
         rel="stylesheet" />
     <link rel="stylesheet" href="../dashboard/dashboard.css" />
     <link rel="stylesheet" href="file_transfer.css" />
+    <link rel="icon" type="image/png" sizes="32x32" href="../shared/logo-32.png" />
+    <link rel="apple-touch-icon" href="../shared/logo-180.png" />
 </head>
 
 <body>
@@ -34,15 +36,7 @@
     <!-- SIDEBAR -->
     <aside class="sidebar" id="sidebar" aria-label="Main navigation">
         <a class="sidebar-brand" href="../dashboard/dashboard.html" aria-label="AIDEA Admin home">
-            <span class="brand-mark" aria-hidden="true">
-                <svg viewBox="0 0 32 32" width="32" height="32" fill="none">
-                    <rect width="32" height="32" rx="9" fill="#FFC72C" />
-                    <path d="M9 22.5 16 8l7 14.5" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round"
-                        stroke-linejoin="round" />
-                    <path d="M11.8 18h8.4" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round" />
-                    <circle cx="16" cy="8" r="1.9" fill="#2563eb" />
-                </svg>
-            </span>
+            <span class="brand-mark" aria-hidden="true"><img src="../shared/logo-64.png" alt="" width="32" height="32" style="display:block;object-fit:contain"></span>
             <span class="brand-text">
                 <span class="brand-name">AIDEA Admin</span>
                 <span class="brand-sub">Norzagaray College</span>
@@ -53,23 +47,21 @@
             <p class="nav-heading">Overview</p>
             <nav class="nav-group">
                 <a href="../dashboard/dashboard.html">Dashboard</a>
-                <a href="../Report generator/Report_generator.html">Report Generator</a>
             </nav>
 
             <p class="nav-heading">Management</p>
             <nav class="nav-group">
-                <a href="../All students/all-students.html">All Students</a>
+                <a href="../All students/all-students.html">Users</a>
                 <a href="../Thesis submissions/Thesis_submissions.html">Thesis Submissions</a>
                 <a href="file_transfer.html" class="active" aria-current="page" data-nav-tab="send">File Transfer</a>
-                <a href="../Payments/payment.html">Payments</a>
-                <a href="../Receipts/Receipts.html">Receipts</a>
+                <a href="../Payments/payment.html">Requests</a>
+                <a href="../Receipts/Receipts.html">Certificate</a>
                 <a href="../Services pricing/Services_pricing.html">Services &amp; Pricing</a>
             </nav>
 
             <p class="nav-heading">Quality</p>
             <nav class="nav-group">
                 <a href="../Satisfaction reports/Satisfaction_reports.html">Satisfaction Reports</a>
-                <a href="../Price audit log/Price_audit_log.html">Price Audit Log</a>
                 <a href="../formatting/formatting.html">Format Templates</a>
             </nav>
 
@@ -177,7 +169,7 @@
                     <form id="sendForm" class="account-form" novalidate>
                         <div class="form-grid">
                             <div class="field">
-                                <label for="sendThesis">Thesis</label>
+                                <label for="sendThesis">Request file</label>
                                 <select id="sendThesis" name="sendThesis" required>
                                     <option value="" disabled selected>Select a thesis…</option>
                                 </select>
@@ -185,6 +177,11 @@
 
                             <div class="field">
                                 <label for="sendRecipient">Send to</label>
+                                <div id="reviewerFilter" style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 8px;">
+                                    <button type="button" class="action-btn action-btn-primary" data-role="all" aria-pressed="true">All</button>
+                                    <button type="button" class="action-btn" data-role="statistician" aria-pressed="false">Statistician</button>
+                                    <button type="button" class="action-btn" data-role="grammarian" aria-pressed="false">Grammarian</button>
+                                </div>
                                 <select id="sendRecipient" name="sendRecipient" required>
                                     <option value="" disabled selected>Select a reviewer…</option>
                                 </select>
@@ -198,16 +195,17 @@
                         </div>
 
                         <div class="field">
-                            <label for="sendFile">Attach a file (optional — defaults to the thesis on record)</label>
+                            <label for="sendFile">Or upload files from your computer (optional)</label>
                             <label class="file-drop" id="fileDropLabel" for="sendFile">
                                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
                                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                                     <path d="M12 16V4M12 4 7 9M12 4l5 5" />
                                     <path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
                                 </svg>
-                                <span id="fileDropText">Click to choose a file, or drag it here</span>
+                                <span id="fileDropText">Click to choose files, or drag them here</span>
                             </label>
-                            <input type="file" id="sendFile" name="sendFile" class="sr-only" accept=".pdf,.doc,.docx" />
+                            <input type="file" id="sendFile" name="sendFile" class="sr-only" accept=".pdf,.doc,.docx" multiple />
+                            <ul id="sendQueue" style="list-style:none;margin:8px 0 0;padding:0;"></ul>
                         </div>
 
                         <p class="form-msg" id="sendMsg" role="status" aria-live="polite"></p>
@@ -256,6 +254,7 @@
     </div>
 
     <script src="file_transfer.js"></script>
+<script src="../shared/sidebar_toggle.js"></script>
 </body>
 
 </html>

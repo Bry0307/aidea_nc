@@ -247,6 +247,25 @@ const ICON_CHECK = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" 
 
 // ── File view / download (shared by admin + reviewer) ──────────────────────
 const ICON_EYE = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>`;
+function linkifyLabel(label) {
+    return escHtml(String(label)).replace(/(https?:\/\/[^\s<]+)/g, function (u) {
+        return '<a href="' + u + '" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;font-weight:600">' + u + '</a>';
+    });
+}
+function renderFileLabel(label) {
+    if (!label) return '';
+    if (!document.getElementById('fl-styles')) {
+        const st = document.createElement('style');
+        st.id = 'fl-styles';
+        st.textContent = [
+            '.fl-caption{display:inline-flex;align-items:baseline;gap:8px;flex:1 1 240px;min-width:0;padding:6px 12px;border-left:3px solid rgba(127,127,127,.45);background:rgba(127,127,127,.06);border-radius:0 8px 8px 0}',
+            '.fl-title{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;opacity:.6;white-space:nowrap}',
+            '.fl-text{font-size:13px;line-height:1.45;word-break:break-word}'
+        ].join('');
+        document.head.appendChild(st);
+    }
+    return '<span class="fl-caption"><span class="fl-title">Uploaded for</span><span class="fl-text">' + linkifyLabel(label) + '</span></span>';
+}
 const ICON_DOWNLOAD = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>`;
 
 /** One row: label + View + Download. Returns '' if there's no file. */
@@ -272,31 +291,26 @@ function guessFilename(res, url, fallback) {
     return fallback;
 }
 
-async function handleFile(url, mode, fallbackName) {
-    // Open the tab synchronously so popup blockers allow it
-    const win = mode === 'view' ? window.open('', '_blank') : null;
-    try {
-        const res = await fetch(url, { headers: { 'Authorization': `Bearer ${getToken()}` } });
-        if (res.status === 401) { clearSession(); window.location.href = LOGIN_URL; return; }
-        if (!res.ok) throw new Error();
-        const blob = await res.blob();
-        const objUrl = URL.createObjectURL(blob);
-
-        if (mode === 'view') {
-            if (win) win.location.href = objUrl; else window.open(objUrl, '_blank');
-        } else {
-            const a = document.createElement('a');
-            a.href = objUrl;
-            a.download = guessFilename(res, url, fallbackName);
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-        }
-        setTimeout(() => URL.revokeObjectURL(objUrl), 60000);
-    } catch {
-        if (win) win.close();
-        alert('Couldn\u2019t open that file. Please try again.');
+function handleFile(url, mode, fallbackName) {
+    if (!url) return;
+    if (mode === 'view') {
+        window.open(url, '_blank', 'noopener');
+        return;
     }
+    let href = url;
+    try {
+        const u = new URL(url, location.href);
+        const base = decodeURIComponent(u.pathname.split('/').pop());
+        const ext = base.indexOf('.') > -1 ? base.slice(base.lastIndexOf('.')) : '';
+        let name = fallbackName || 'thesis-file';
+        if (ext && !name.toLowerCase().endsWith(ext.toLowerCase())) name += ext;
+        href = ADMIN_API + '/download/assignments/' + encodeURIComponent(base) + '?name=' + encodeURIComponent(name);
+    } catch (e) { }
+    const a = document.createElement('a');
+    a.href = href;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
 }
 
 function initFileActions() {
@@ -310,21 +324,82 @@ function initFileActions() {
 
 // ── Populate the send form's dropdowns ──────────────────────────────────────
 
+let paymentFileOptions = {};
+
+function dataUrlToFile(dataUrl, name) {
+    const parts = String(dataUrl).split(',');
+    const m = parts[0].match(/:(.*?);/);
+    const mime = m ? m[1] : 'application/octet-stream';
+    const bin = atob(parts[1] || '');
+    const arr = new Uint8Array(bin.length);
+    for (let k = 0; k < bin.length; k++) arr[k] = bin.charCodeAt(k);
+    return new File([arr], name, { type: mime });
+}
+
 async function loadThesisOptions() {
     const select = document.getElementById('sendThesis');
     try {
-        const res = await fetch(`${ADMIN_API}/thesis/list`, { headers: authHeaders() });
+        const res = await fetch(`${ADMIN_API}/payments`, { headers: authHeaders() });
         if (res.status === 401) { clearSession(); window.location.href = LOGIN_URL; return; }
         if (!res.ok) throw new Error();
-        const items = asList(await res.json());
+        const payments = asList(await res.json());
 
-        select.innerHTML = '<option value="" disabled selected>Select a thesis…</option>' + items.map(t => `
-            <option value="${t.id}">${escHtml(t.title || 'Untitled thesis')} — ${escHtml(t.user?.name ?? t.student_name ?? '—')}</option>
-        `).join('');
+        paymentFileOptions = {};
+        let html = '<option value="" disabled selected>Select an ongoing request file\u2026</option>';
+        payments.filter(p => String(p.status).toLowerCase() === 'ongoing').forEach(p => {
+            let items = p.research_items;
+            try { if (typeof items === 'string') items = JSON.parse(items); } catch { items = []; }
+            if (!Array.isArray(items)) return;
+            items.forEach((it, idx) => {
+                if ((it.type === 'file' || it.type === 'image') && it.file_base64) {
+                    const key = p.id + ':' + idx;
+                    paymentFileOptions[key] = { payment: p, item: it };
+                    html += `<option value="${key}">${escHtml(p.student || 'Student')} \u2014 ${escHtml(it.label || 'File')} (${escHtml(it.file_name || 'file')})</option>`;
+                }
+            });
+        });
+        select.innerHTML = html;
     } catch {
-        select.innerHTML = '<option value="" disabled selected>Couldn\u2019t load theses</option>';
+        select.innerHTML = '<option value="" disabled selected>Couldn\u2019t load payments</option>';
     }
 }
+
+let reviewerItems = [];
+let reviewerFilter = 'all';
+
+function renderReviewerOptions() {
+    const select = document.getElementById('sendRecipient');
+    if (!select) return;
+    const byRole = { statistician: [], grammarian: [] };
+    reviewerItems.forEach(r => { (byRole[r.role] || (byRole[r.role] = [])).push(r); });
+
+    const optgroup = (role, label) => {
+        if (reviewerFilter !== 'all' && reviewerFilter !== role) return '';
+        const people = byRole[role] || [];
+        if (!people.length) return '';
+        return `<optgroup label="${label}">${people.map(r => `
+            <option value="${r.id}">${escHtml([r.fname, r.lname].filter(Boolean).join(' ') || r.name || label)}</option>
+        `).join('')}</optgroup>`;
+    };
+
+    const body = optgroup('statistician', 'Statistician') + optgroup('grammarian', 'Grammarian');
+    select.innerHTML = '<option value="" disabled selected>' + (body ? 'Select a reviewer\u2026' : 'No reviewers in this group') + '</option>' + body;
+}
+
+function setReviewerFilter(role) {
+    reviewerFilter = (role === 'statistician' || role === 'grammarian') ? role : 'all';
+    document.querySelectorAll('#reviewerFilter [data-role]').forEach(b => {
+        const on = b.dataset.role === reviewerFilter;
+        b.classList.toggle('action-btn-primary', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    renderReviewerOptions();
+}
+
+document.addEventListener('click', e => {
+    const b = e.target.closest('#reviewerFilter [data-role]');
+    if (b) { e.preventDefault(); setReviewerFilter(b.dataset.role); }
+});
 
 async function loadReviewerOptions() {
     const select = document.getElementById('sendRecipient');
@@ -332,22 +407,8 @@ async function loadReviewerOptions() {
         const res = await fetch(`${ADMIN_API}/admin/reviewers`, { headers: authHeaders() });
         if (res.status === 401) { clearSession(); window.location.href = LOGIN_URL; return; }
         if (!res.ok) throw new Error();
-        const items = asList(await res.json());
-
-        const byRole = { statistician: [], grammarian: [] };
-        items.forEach(r => { (byRole[r.role] || (byRole[r.role] = [])).push(r); });
-
-        const optgroup = (role, label) => {
-            const people = byRole[role] || [];
-            if (!people.length) return '';
-            return `<optgroup label="${label}">${people.map(r => `
-                <option value="${r.id}">${escHtml([r.fname, r.lname].filter(Boolean).join(' ') || r.name || label)}</option>
-            `).join('')}</optgroup>`;
-        };
-
-        select.innerHTML = '<option value="" disabled selected>Select a reviewer…</option>'
-            + optgroup('statistician', 'Statistician')
-            + optgroup('grammarian', 'Grammarian');
+        reviewerItems = asList(await res.json());
+        setReviewerFilter(new URLSearchParams(window.location.search).get('role') || 'all');
     } catch {
         select.innerHTML = '<option value="" disabled selected>Couldn\u2019t load reviewers</option>';
     }
@@ -391,6 +452,7 @@ async function loadSent() {
                     ${t.note ? `<div class="review-card-note"><span>Your note:</span> ${escHtml(t.note)}</div>` : ''}
 
                     ${fileRow(t.file_url, 'File sent', 'thesis-sent')}
+                    ${renderFileLabel(t.file_label)}
                 </div>
             </article>
         `).join('');
@@ -437,7 +499,9 @@ async function loadReceived() {
                     ${t.reviewer_note ? `<div class="review-card-note"><span>Reviewer's note:</span> ${escHtml(t.reviewer_note)}</div>` : ''}
 
                     ${fileRow(t.file_url, 'Original file', 'thesis-original')}
-                    ${fileRow(t.reviewed_file_url, 'Reviewed file', 'thesis-reviewed')}
+                    ${renderFileLabel(t.file_label)}
+                    ${reviewedRows(t, 'Reviewed file', 'thesis-reviewed')}
+                    ${t.comments_file_url ? fileRow(t.comments_file_url, 'Comments file', 'thesis-comments') : ''}
                 </div>
             </article>
         `).join('');
@@ -449,11 +513,63 @@ async function loadReceived() {
 // ── Send form ────────────────────────────────────────────────────────────
 
 let selectedFile = null;
+let sendQueue = [];
+
+function renderQueue() {
+    const list = document.getElementById('sendQueue');
+    if (!list) return;
+    list.innerHTML = '';
+    sendQueue.forEach(function (entry, idx) {
+        const li = document.createElement('li');
+        li.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;';
+        const span = document.createElement('span');
+        span.textContent = entry.label;
+        const x = document.createElement('button');
+        x.type = 'button';
+        x.textContent = '\u2715';
+        x.setAttribute('aria-label', 'Remove');
+        x.style.cssText = 'border:0;background:none;cursor:pointer;font-size:14px;color:inherit;';
+        x.addEventListener('click', function () { sendQueue.splice(idx, 1); renderQueue(); });
+        li.appendChild(span);
+        li.appendChild(x);
+        list.appendChild(li);
+    });
+    const dropLabel = document.getElementById('fileDropLabel');
+    if (sendQueue.length) {
+        dropLabel.classList.add('has-file');
+        setText('fileDropText', sendQueue.length + (sendQueue.length === 1 ? ' file' : ' files') + ' ready \u2014 click to add more');
+    } else {
+        resetFileDrop();
+    }
+}
+
+function addUploadedFiles(files) {
+    files.forEach(function (f) {
+        const dup = sendQueue.some(function (q) { return q.source === 'upload' && q.file.name === f.name && q.file.size === f.size; });
+        if (!dup) sendQueue.push({ source: 'upload', key: null, file: f, title: f.name, student_name: '', label: f.name });
+    });
+    renderQueue();
+}
+
+function addPaymentFile(key, opt) {
+    if (sendQueue.some(function (q) { return q.key === key; })) return;
+    const name = opt.item.file_name || 'file';
+    let file;
+    try { file = dataUrlToFile(opt.item.file_base64, name); }
+    catch (e) { showMsg('sendMsg', 'Could not read that file.', 'error'); return; }
+    sendQueue.push({
+        source: 'payment', key: key, file: file,
+        title: (opt.item.label || 'File') + ' - ' + name,
+        student_name: opt.payment.student || '',
+        label: (opt.payment.student || 'Student') + ' \u2014 ' + (opt.item.label || 'File') + ' (' + name + ')'
+    });
+    renderQueue();
+}
 
 function resetFileDrop() {
     const label = document.getElementById('fileDropLabel');
     label.classList.remove('has-file', 'is-dragover');
-    setText('fileDropText', 'Click to choose a file, or drag it here');
+    setText('fileDropText', 'Click to choose files, or drag them here');
 }
 
 function initSendForm() {
@@ -461,13 +577,15 @@ function initSendForm() {
     const dropLabel = document.getElementById('fileDropLabel');
 
     fileInput.addEventListener('change', () => {
-        selectedFile = fileInput.files[0] || null;
-        if (selectedFile) {
-            dropLabel.classList.add('has-file');
-            setText('fileDropText', selectedFile.name);
-        } else {
-            resetFileDrop();
-        }
+        addUploadedFiles(Array.prototype.slice.call(fileInput.files));
+        fileInput.value = '';
+    });
+
+    const paySelect = document.getElementById('sendThesis');
+    paySelect.addEventListener('change', () => {
+        const opt = paymentFileOptions[paySelect.value];
+        if (opt) addPaymentFile(paySelect.value, opt);
+        paySelect.selectedIndex = 0;
     });
 
     ['dragover', 'dragenter'].forEach(evt =>
@@ -475,22 +593,15 @@ function initSendForm() {
     ['dragleave', 'drop'].forEach(evt =>
         dropLabel.addEventListener(evt, e => { e.preventDefault(); dropLabel.classList.remove('is-dragover'); }));
     dropLabel.addEventListener('drop', e => {
-        const file = e.dataTransfer.files[0];
-        if (file) {
-            fileInput.files = e.dataTransfer.files;
-            selectedFile = file;
-            dropLabel.classList.add('has-file');
-            setText('fileDropText', file.name);
-        }
+        addUploadedFiles(Array.prototype.slice.call(e.dataTransfer.files));
     });
 
     document.getElementById('sendForm').addEventListener('submit', async e => {
         e.preventDefault();
 
-        const thesisId = document.getElementById('sendThesis').value;
         const reviewerId = document.getElementById('sendRecipient').value;
-        if (!thesisId || !reviewerId) {
-            showMsg('sendMsg', 'Choose a thesis and a reviewer first.', 'error');
+        if (!sendQueue.length || !reviewerId) {
+            showMsg('sendMsg', 'Add at least one file and choose a reviewer first.', 'error');
             return;
         }
 
@@ -498,32 +609,44 @@ function initSendForm() {
         setBtnLoading(submitBtn, true);
         showMsg('sendMsg', '', null);
 
-        const body = new FormData();
-        body.append('thesis_id', thesisId);
-        body.append('reviewer_id', reviewerId);
-        body.append('note', document.getElementById('sendNote').value.trim());
-        if (selectedFile) body.append('file', selectedFile);
+        const note = document.getElementById('sendNote').value.trim();
+        const total = sendQueue.length;
+        let sent = 0;
 
         try {
-            const res = await fetch(`${ADMIN_API}/admin/assignments`, {
-                method: 'POST',
-                headers: authHeaders(false), // let the browser set the multipart boundary
-                body,
-            });
+            while (sendQueue.length) {
+                const entry = sendQueue[0];
+                const body = new FormData();
+                body.append('reviewer_id', reviewerId);
+                body.append('note', note);
+                body.append('title', entry.title);
+                if (entry.student_name) body.append('student_name', entry.student_name);
+                body.append('file', entry.file);
 
-            if (res.status === 401) { clearSession(); window.location.href = LOGIN_URL; return; }
-            if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                throw new Error(err.message || 'Could not send this file. Try again.');
+                const res = await fetch(`${ADMIN_API}/admin/assignments`, {
+                    method: 'POST',
+                    headers: authHeaders(false),
+                    body,
+                });
+
+                if (res.status === 401) { clearSession(); window.location.href = LOGIN_URL; return; }
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.message || ('Could not send "' + entry.file.name + '".'));
+                }
+                sendQueue.shift();
+                sent++;
+                renderQueue();
             }
 
             document.getElementById('sendForm').reset();
             selectedFile = null;
-            resetFileDrop();
-            showMsg('sendMsg', 'Sent!', 'success');
+            renderQueue();
+            showMsg('sendMsg', total === 1 ? 'Sent!' : ('Sent ' + total + ' files!'), 'success');
             await loadSent();
         } catch (err) {
-            showMsg('sendMsg', err.message || 'Something went wrong. Try again.', 'error');
+            showMsg('sendMsg', (sent ? ('Sent ' + sent + ' of ' + total + '. ') : '') + (err.message || 'Something went wrong. Try again.'), 'error');
+            if (sent) { try { await loadSent(); } catch (e2) { /* ignore */ } }
         } finally {
             setBtnLoading(submitBtn, false);
         }
@@ -555,3 +678,12 @@ document.addEventListener('DOMContentLoaded', () => {
     loadSent();
     loadReceived();
 });
+
+function reviewedRows(t, label, name) {
+    const urls = (Array.isArray(t.reviewed_file_urls) && t.reviewed_file_urls.length)
+        ? t.reviewed_file_urls
+        : (t.reviewed_file_url ? [t.reviewed_file_url] : []);
+    return urls.map(function (u, i) {
+        return fileRow(u, urls.length > 1 ? label + ' ' + (i + 1) : label, name + (urls.length > 1 ? '-' + (i + 1) : ''));
+    }).join('');
+}

@@ -6,6 +6,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AIDEA – Student Portal</title>
     <link rel="stylesheet" href="../landing/aidea_styles.css" />
+    <link rel="icon" type="image/png" sizes="32x32" href="../shared/logo-32.png" />
+    <link rel="apple-touch-icon" href="../shared/logo-180.png" />
 </head>
 
 <body>
@@ -31,7 +33,7 @@
                     <span class="nav-icon">👤</span> My Profile
                 </a>
                 <a href="#" class="sidebar-link" onclick="showPage('submit')">
-                    <span class="nav-icon">📄</span> Submit Thesis
+                    <span class="nav-icon">📄</span> Submit Documents
                 </a>
                 <a href="#" class="sidebar-link" onclick="showPage('myThesis')">
                     <span class="nav-icon">📚</span> My Submissions
@@ -45,7 +47,7 @@
                     <span class="nav-icon">🛠️</span> Avail Services
                 </a>
                 <a href="#" class="sidebar-link" onclick="showPage('payments')">
-                    <span class="nav-icon">💳</span> Payments & Receipts
+                    <span class="nav-icon">💳</span> Requests
                 </a>
                 <div class="nav-group-label">Events</div>
                 <a href="#" class="sidebar-link" onclick="showPage('events')">
@@ -417,7 +419,7 @@
             <div id="page-payments" class="page-view hidden">
                 <div class="card">
                     <div class="card-header">
-                        <span class="card-title">Payment History & Receipts</span>
+                        <span class="card-title">Requests History & Receipts</span>
                     </div>
                     <div class="table-wrap">
                         <table>
@@ -659,6 +661,7 @@
 
     <div class="toast-container" id="toastContainer"></div>
     <script src="aidea_app.js"></script>
+<script src="../shared/sidebar_toggle.js"></script>
 </body>
 
 </html>

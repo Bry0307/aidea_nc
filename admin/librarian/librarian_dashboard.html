@@ -25,22 +25,16 @@
         rel="stylesheet" />
     <!-- Same stylesheet as the admin page: copy Thesis_submissions.css into this folder unchanged -->
     <link rel="stylesheet" href="../Thesis submissions/Thesis_submissions.css" />
+    <link rel="icon" type="image/png" sizes="32x32" href="../shared/logo-32.png" />
+    <link rel="apple-touch-icon" href="../shared/logo-180.png" />
 </head>
 
 <body>
 
     <!-- SIDEBAR -->
     <aside class="sidebar" id="sidebar" aria-label="Main navigation">
-        <a class="sidebar-brand" href="../dashboard/librarian_dashboard.html" aria-label="AIDEA Librarian home">
-            <span class="brand-mark" aria-hidden="true">
-                <svg viewBox="0 0 32 32" width="32" height="32" fill="none">
-                    <rect width="32" height="32" rx="9" fill="#FFC72C" />
-                    <path d="M9 22.5 16 8l7 14.5" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round"
-                        stroke-linejoin="round" />
-                    <path d="M11.8 18h8.4" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round" />
-                    <circle cx="16" cy="8" r="1.9" fill="#2563eb" />
-                </svg>
-            </span>
+        <a class="sidebar-brand" href="librarian_dashboard.html" aria-label="AIDEA Librarian home">
+            <span class="brand-mark" aria-hidden="true"><img src="../shared/logo-64.png" alt="" width="32" height="32" style="display:block;object-fit:contain"></span>
             <span class="brand-text">
                 <span class="brand-name">AIDEA Librarian</span>
                 <span class="brand-sub">Norzagaray College</span>
@@ -48,14 +42,9 @@
         </a>
 
         <div class="sidebar-scroll">
-            <p class="nav-heading">Overview</p>
-            <nav class="nav-group">
-                <a href="../dashboard/librarian_dashboard.html">Dashboard</a>
-            </nav>
-
             <p class="nav-heading">Library</p>
             <nav class="nav-group">
-                <a href="Librarian_thesis_submissions.html" class="active" aria-current="page">Thesis Submissions</a>
+                <a href="librarian_dashboard.html" class="active" aria-current="page">Thesis Submissions</a>
             </nav>
         </div>
 
@@ -162,7 +151,8 @@
                     <option value="Pending">Pending</option>
                     <option value="Rejected">Rejected</option>
                 </select>
-                <button class="btn-view-repo" id="viewRepoBtn" type="button">
+                <button class="btn-view-repo" id="addDocBtn" type="button" style="margin-right:8px">+ Add Document</button>
+<button class="btn-view-repo" id="viewRepoBtn" type="button">
                     Repository <span class="repo-count" id="repoBadgeCount" hidden>0</span>
                 </button>
             </div>
@@ -225,9 +215,6 @@
                     <div id="viewFileSection"></div>
                 </div>
             </div>
-            <div class="modal-actions">
-                <button class="modal-btn modal-btn-cancel" type="button" data-close="viewModal">Close</button>
-            </div>
         </div>
     </div>
 
@@ -254,7 +241,7 @@
                     <span class="detail-label">Set status</span>
                     <div class="status-options">
                         <button class="btn-status approved" type="button" data-status="Approved">Approve</button>
-                        <button class="btn-status pending" type="button" data-status="Pending">Mark pending</button>
+                        <button class="btn-status pending" type="button" data-status="Pending">Mark as pending</button>
                         <button class="btn-status rejected" type="button" data-status="Rejected">Reject</button>
                     </div>
                 </div>
@@ -265,10 +252,54 @@
                 </div>
             </div>
             <div class="modal-actions">
-                <button class="modal-btn modal-btn-cancel" type="button" data-close="reviewModal">Cancel</button>
                 <button class="modal-btn modal-btn-primary" type="button" id="submitReviewBtn">Submit review</button>
             </div>
         </div>
+    </div>
+
+    <!-- ADD DOCUMENT MODAL -->
+    <style>
+      .up-field{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
+      .up-field label{font-size:.85rem;font-weight:600}
+      .up-field input,.up-field textarea,.up-field select{padding:9px 10px;border:1px solid rgba(128,128,128,.45);border-radius:8px;background:transparent;color:inherit;font:inherit}
+      .up-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+      .up-field select option{color:#111;background:#fff}
+      .up-count{font-size:.8rem;opacity:.85}
+      .up-err{color:#dc2626;font-size:.85rem;min-height:1.2em;margin:0 0 8px}
+      #upToast{position:fixed;right:16px;bottom:16px;z-index:9999;padding:10px 14px;border-radius:8px;color:#fff;background:#16a34a;font-size:.9rem}
+      #upToast.err{background:#dc2626}
+      @media (max-width:520px){.up-row{grid-template-columns:1fr}}
+    </style>
+    <div class="modal-backdrop" id="uploadModal" hidden>
+      <div class="modal modal--wide" role="dialog" aria-modal="true" aria-labelledby="uploadModalTitle">
+        <div class="modal-head">
+          <h3 class="modal-title" id="uploadModalTitle">Add document to repository</h3>
+          <button class="modal-x" type="button" data-upload-close aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="up-field"><label for="upTitle" id="upTitleLbl">Thesis title *</label><input id="upTitle" type="text" maxlength="500"></div>
+          <div class="up-row">
+            <div class="up-field"><label for="upCourse">Course / program *</label>
+              <select id="upCourse"><option value="">Select course</option><option>BSCS</option><option>BEED</option><option>BSED</option><option>BSHM</option></select></div>
+            <div class="up-field"><label for="upYear">Academic year *</label>
+              <select id="upYear"><option value="">Select academic year</option><option>2026-2027</option><option>2027-2028</option><option>2028-2029</option><option>2029-2030</option></select></div>
+          </div>
+          <div class="up-row">
+            <div class="up-field"><label for="upAdviser">Adviser name *</label><input id="upAdviser" type="text" maxlength="255"></div>
+            <div class="up-field"><label for="upType">Submission type *</label>
+              <select id="upType"><option value="thesis">Thesis paper</option><option value="research">Research paper</option></select></div>
+          </div>
+          <div class="up-field"><label for="upAuthors">Researchers (optional)</label><input id="upAuthors" type="text" maxlength="500" placeholder="e.g. Juan Dela Cruz, Maria Santos"></div>
+          <div class="up-field"><label for="upAbstract">Abstract / summary *</label><textarea id="upAbstract" rows="6"></textarea><small class="up-count" id="upCount">0 words - required: 150 to 200 words</small></div>
+          <div class="up-field"><label for="upFile" id="upFileLbl">Thesis paper file * (PDF or DOCX, max 20 MB)</label><input id="upFile" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"></div>
+          <div class="up-field"><label for="upImrad">IMRAD file<span id="upImradReq"> (optional)</span> (PDF or DOCX, max 20 MB)</label><input id="upImrad" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"></div>
+          <p class="up-err" id="upErr" role="alert"></p>
+        </div>
+        <div class="modal-actions">
+          <button class="modal-btn modal-btn-cancel" type="button" data-upload-close>Cancel</button>
+          <button class="modal-btn modal-btn-primary" type="button" id="upSubmit">Add to repository</button>
+        </div>
+      </div>
     </div>
 
     <!-- REPOSITORY MODAL -->
@@ -300,6 +331,8 @@
     </div>
 
     <script src="Librarian_thesis_submissions.js?v=1"></script>
+<script src="librarian_upload.js?v=9"></script>
+<script src="../shared/sidebar_toggle.js"></script>
 </body>
 
 </html>

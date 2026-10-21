@@ -36,13 +36,6 @@ class PaymentFilesSent extends Notification
     public function toMail($notifiable): MailMessage
     {
         $isCert = $this->type === 'certificate';
-        $limit = 8 * 1024 * 1024; $total = 0; $links = []; $attach = [];
-        foreach ($this->files as $pf) {
-            $abs = storage_path('app/public/' . $pf['path']);
-            $sz = is_file($abs) ? filesize($abs) : 0;
-            if ($sz > 0 && ($total + $sz) <= $limit) { $attach[] = [$abs, $pf['name']]; $total += $sz; }
-            else { $links[] = $pf['name'] . ': ' . url('/api/download/payment-files/' . ltrim(preg_replace('#^payment-files/#', '', $pf['path']), '/') . '?name=' . rawurlencode($pf['name'])); }
-        }
 
         $mail = (new MailMessage)
             ->subject($isCert ? 'Your AIDEA certificate is ready' : 'New files from AIDEA Admin')
@@ -50,16 +43,12 @@ class PaymentFilesSent extends Notification
                 'isCertificate' => $isCert,
                 'name'          => $notifiable->fname ?: ($notifiable->full_name ?? 'there'),
                 'service'       => $this->payment->service ?? null,
-                'note'          => trim(($this->message ? $this->message . "
-
-" : '') . (count($links) ? "Download (file too large to attach):
-" . implode("
-", $links) : '')) ?: null,
+                'note'          => $this->message,
                 'files'         => $this->files,
             ]);
 
         foreach ($this->files as $f) {
-            foreach ($attach as $a) { $mail->attach($a[0], ['as' => $a[1]]); } $attach = [];
+            $mail->attach(storage_path('app/public/' . $f['path']), ['as' => $f['name']]);
         }
 
         return $mail;

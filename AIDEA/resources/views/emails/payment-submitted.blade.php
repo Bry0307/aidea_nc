@@ -1,5 +1,3 @@
-<div style="text-align:center;padding:20px 0 10px;"><img src="https://aideanc-production.up.railway.app/images/email-logo.png" alt="AIDEA" width="80" height="80" style="display:block;margin:0 auto;border:0;outline:none;"></div>
-
 <h2>New Request Submitted</h2>
 
 <p>A student has submitted a payment for a service. Details below:</p>
@@ -7,6 +5,7 @@
 <table cellpadding="6" cellspacing="0" border="1" style="border-collapse:collapse;">
     <tr><td><strong>Service</strong></td><td>{{ $payment->service }}</td></tr>
     <tr><td><strong>Student</strong></td><td>{{ $payment->student }}</td></tr>
+    <tr><td><strong>Student ID</strong></td><td>{{ $payment->student_id ?? '-' }}</td></tr>
     <tr><td><strong>Amount</strong></td><td>&#8369;{{ number_format($payment->amount, 2) }}</td></tr>
     <tr><td><strong>GCash Reference</strong></td><td>{{ $payment->gcash_ref }}</td></tr>
     <tr><td><strong>Internal Ref</strong></td><td>{{ $payment->ref }}</td></tr>

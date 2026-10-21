@@ -29,13 +29,13 @@ const ALLOWED_FILE_TYPES = [
     'application/msword',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 ];
-const ALLOWED_FILE_EXT = ['.pdf', '.doc', '.docx'];
+const ALLOWED_FILE_EXT = ['.pdf', '.doc', '.docx', '.xls', '.xlsx'];
 
 const ITEM_TYPE_META = {
     text: { icon: '📝', label: 'Text' },
     file: { icon: '📎', label: 'File' },
     image: { icon: '🖼️', label: 'Image' },
-    checkbox: { icon: '☑️', label: 'Checkbox' },
+    checkbox: { icon: '☑️', label: 'Checkbox' }, link: { icon: '🔗', label: 'Link' }, excel: { icon: '📊', label: 'Excel' },
 };
 
 let currentResearchItems = [];   // [{ text, type, optional, options }] for the open service
@@ -250,8 +250,8 @@ function parseResearchItems(raw) {
                 return {
                     text: item.text || '',
                     type: ITEM_TYPE_META[type] ? type : 'text',
-                    optional: !!item.optional,
-                    options: normalizeOptions(item.options),
+                    optional: ((type === 'link' || type === 'excel') && String(item.url || '').trim()) ? true : !!item.optional,
+                    options: normalizeOptions(item.options), url: String(item.url || ''),
                 };
             }
             return null;
@@ -294,8 +294,8 @@ async function loadAndRenderServices() {
                 <div class="svc-card-name">${escapeHtml(s.name)}</div>
                 <p class="svc-card-desc">${escapeHtml(s.description || '')}</p>
                 ${s.requires_research_info ? `<span class="svc-research-badge">Requires research info</span>` : ''}
-                <div class="svc-card-price">₱ ${Number(s.price).toLocaleString()} <span>/ session</span></div>
-                <button class="btn-avail" type="button" onclick="openGcashModal(${Number(s.id)})">Pay via GCash</button>
+                ${Number(s.price) > 0 ? `<div class="svc-card-price">₱ ${Number(s.price).toLocaleString()} <span>/ session</span></div>` : ''}
+                <button class="btn-avail" type="button" onclick="openGcashModal(${Number(s.id)})">Avail</button>
             </div>
         `).join('');
 
@@ -336,7 +336,7 @@ function openGcashModal(id) {
         : [];
     resetResearchForm();
     updateStepTabs();
-    goToStep1();
+    if (isFreeService()) { hideAllStepBodies(); proceedFromStep1(); } else { goToStep1(); }
     document.getElementById('gcashModalOverlay').hidden = false;
     document.body.classList.add('no-scroll');
 }
@@ -357,11 +357,19 @@ function updateStepTabs() {
     const requiresResearch = !!(currentService && currentService.requires_research_info);
     const researchTab = document.getElementById('gmStepResearchTab');
     researchTab.style.display = requiresResearch ? 'block' : 'none';
+    document.getElementById('gmStep1Tab').style.display = isFreeService() ? 'none' : '';
+    document.getElementById('gmStep2Tab').style.display = isFreeService() ? 'none' : '';
+    (function () {
+        var rb = document.querySelector('#gmBodyResearch .gm-btn-next');
+        if (!rb) return;
+        if (!rb.dataset.orig) rb.dataset.orig = rb.textContent;
+        rb.textContent = isFreeService() ? 'Submit Request' : rb.dataset.orig;
+    })();
 
     const visibleTabs = [
-        document.getElementById('gmStep1Tab'),
+        ...(isFreeService() ? [] : [document.getElementById('gmStep1Tab')]),
         ...(requiresResearch ? [researchTab] : []),
-        document.getElementById('gmStep2Tab'),
+        ...(isFreeService() ? [] : [document.getElementById('gmStep2Tab')]),
         document.getElementById('gmStep3Tab'),
     ];
     visibleTabs.forEach((tab, i) => {
@@ -384,6 +392,7 @@ function setTabState(id, state) {
 }
 
 function goToStep1() {
+    if (isFreeService()) { closeGcashModal(); return; }
     hideAllStepBodies();
     document.getElementById('gmBodyStep1').style.display = 'block';
     setTabState('gmStep1Tab', 'active');
@@ -402,6 +411,8 @@ function goToStepResearch() {
 }
 
 function goToStep2() {
+    if (isFreeService() && currentService?.requires_research_info) { submitPayment(); return; }
+    setProofMode();
     hideAllStepBodies();
     document.getElementById('gmBodyStep2').style.display = 'block';
     setTabState('gmStep1Tab', 'done');
@@ -411,6 +422,7 @@ function goToStep2() {
 }
 
 function goToStep3() {
+    { var sp = document.querySelector('#gmBodyStep3 .gm-success p'); if (sp) sp.textContent = isFreeService() ? 'Your request has been submitted and is awaiting admin review.' : 'Your payment proof has been submitted and is awaiting admin verification.'; }
     hideAllStepBodies();
     document.getElementById('gmBodyStep3').style.display = 'block';
     setTabState('gmStep1Tab', 'done');
@@ -461,11 +473,11 @@ function renderResearchFields(items) {
 
         if (item.type === 'file' || item.type === 'image') {
             const isImage = item.type === 'image';
-            const hint = isImage ? `PNG or JPG — max ${MAX_IMAGE_MB} MB` : `PDF, DOC, or DOCX — max ${MAX_FILE_MB} MB`;
+            const hint = isImage ? `PNG or JPG — max ${MAX_IMAGE_MB} MB` : `PDF, Word, or Excel — max ${MAX_FILE_MB} MB`;
             const upIcon = isImage ? '🖼️' : '📄';
             return `
                 <div class="form-group">
-                    <label>${fieldLabelHtml(item)}</label>
+                    <label style="white-space:pre-line;">${fieldLabelHtml(item)}</label>
                     <button type="button" class="gm-upload-zone ri-dyn-upload" data-idx="${i}">
                         <div class="up-icon">${upIcon}</div>
                         <div class="ri-dyn-prompt">
@@ -475,9 +487,28 @@ function renderResearchFields(items) {
                         <div class="gm-file-name ri-dyn-filename" style="display:none;"></div>
                     </button>
                     <input type="file" class="ri-dyn-file-input" data-idx="${i}"
-                        accept="${isImage ? 'image/*' : '.pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document'}"
+                        accept="${isImage ? 'image/*' : '.pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}"
                         style="display:none;" />
                     <div class="gm-file-status ri-dyn-status" data-idx="${i}"></div>
+                </div>`;
+        }
+
+        if (item.type === 'link' || item.type === 'excel') {
+            let href = String(item.url || '').trim();
+            const isExcel = item.type === 'excel';
+            if (href) {
+                if (!/^https?:\/\//i.test(href)) href = 'https://' + href;
+                const tag = isExcel ? ' <span style="font-size:.7rem;font-weight:700;color:var(--muted);">(Excel)</span>' : '';
+                return `
+                <div class="form-group">
+                    <a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer"
+                       style="color:var(--primary);font-weight:700;text-decoration:underline;word-break:break-all;">${escapeHtml(item.text)}</a>${tag}
+                </div>`;
+            }
+            return `
+                <div class="form-group">
+                    <label style="white-space:pre-line;">${fieldLabelHtml(item)}</label>
+                    <input type="url" class="ri-dyn-input" data-idx="${i}" placeholder="Paste your ${isExcel ? 'Excel / Google Sheets ' : ''}link (https://...)" />
                 </div>`;
         }
 
@@ -500,7 +531,7 @@ function renderResearchFields(items) {
                 </div>`).join('');
             return `
                 <div class="form-group">
-                    <label>${fieldLabelHtml(item)}</label>
+                    <label style="white-space:pre-line;">${fieldLabelHtml(item)}</label>
                     <div style="display:flex;flex-direction:column;gap:.5rem;">
                         ${boxes || '<span style="font-size:.8rem;color:var(--muted);">No choices set.</span>'}
                     </div>
@@ -509,8 +540,8 @@ function renderResearchFields(items) {
 
         return `
             <div class="form-group">
-                <label>${fieldLabelHtml(item)}</label>
-                <input type="text" class="ri-dyn-input" data-idx="${i}" placeholder="Enter ${escapeHtml(item.text)}" />
+                <label style="white-space:pre-line;">${fieldLabelHtml(item)}</label>
+                <textarea class="ri-dyn-input" data-idx="${i}" rows="1" placeholder="Type your answer" oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'" style="width:100%;box-sizing:border-box;resize:none;overflow:hidden;min-height:42px;font:inherit;padding:.6rem .8rem;border:1px solid rgba(128,128,128,.4);border-radius:8px;background:transparent;color:inherit;"></textarea>
             </div>`;
     }).join('');
 
@@ -587,7 +618,7 @@ async function handleDynamicFile(idx, file, type) {
         const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
         const typeOk = ALLOWED_FILE_TYPES.includes(file.type) || ALLOWED_FILE_EXT.includes(ext);
         if (!typeOk) {
-            statusEl.textContent = 'Only PDF, DOC, or DOCX files are accepted.';
+            statusEl.textContent = 'Only PDF, Word, or Excel files are accepted.';
             statusEl.style.color = '#ef4444';
             delete researchFieldValues[idx];
             return;
@@ -697,23 +728,24 @@ function proceedFromResearch() {
    SUBMIT PAYMENT
 ══════════════════════════════════════════════════ */
 async function submitPayment() {
+    if (window.__submitting) return;
     const proofFile = document.getElementById('gmProofInput').files[0];
     const ref = document.getElementById('gmRefInput').value.trim();
 
-    if (!proofFile) return showToast('Please upload your GCash payment screenshot.', 'error');
-    if (!ref) return showToast('Please enter the GCash reference number.', 'error');
-    if (ref.length < 6) return showToast('Reference number looks too short.', 'error');
+    if (!isFreeService() && !proofFile) return showToast('Please upload your GCash payment screenshot.', 'error');
+    if (!isFreeService() && !ref) return showToast('Please enter the GCash reference number.', 'error');
+    if (!isFreeService() && !/^\d{13}$/.test(ref)) return showToast('Reference number must be exactly 13 digits.', 'error');
 
     if (currentService?.requires_research_info && !researchInfoData) {
         return showToast('Please complete the Research Info step first.', 'error');
     }
 
     const submitBtn = document.querySelector('#gmBodyStep2 .gm-btn-next');
-    submitBtn.disabled = true;
+    window.__submitting = true; submitBtn.disabled = true;
     submitBtn.textContent = 'Submitting…';
 
     try {
-        const proofB64 = await new Promise((resolve, reject) => {
+        const proofB64 = isFreeService() ? null : await new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.onload = e => resolve(e.target.result);
             reader.onerror = () => reject(new Error('File read failed'));
@@ -726,7 +758,7 @@ async function submitPayment() {
         const studentId = user.student_number || user.student_id || '';
 
         const payload = {
-            gcash_ref: ref,
+            gcash_ref: isFreeService() ? null : ref,
             service: currentService.name,
             service_id: currentService.id,
             student: studentName,
@@ -734,7 +766,7 @@ async function submitPayment() {
             date: now.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }),
             date_iso: now.toISOString().split('T')[0],
             amount: currentService.price,
-            method: 'GCash',
+            method: isFreeService() ? 'Free' : 'GCash',
             status: 'Pending',
             proof_image: proofB64,
             ...(currentService.requires_research_info && researchInfoData ? {
@@ -748,15 +780,15 @@ async function submitPayment() {
         });
 
         console.log('Payment saved to DB:', created);
-        showToast('Payment proof submitted!', 'success');
+        showToast(isFreeService() ? 'Request submitted!' : 'Payment proof submitted!', 'success');
         goToStep3();
 
     } catch (err) {
         console.error('Payment submission failed:', err);
         showToast('Submission failed: ' + (err.message || JSON.stringify(err)), 'error');
     } finally {
-        submitBtn.disabled = false;
-        submitBtn.textContent = 'Submit Payment';
+        window.__submitting = false; submitBtn.disabled = false;
+        submitBtn.textContent = isFreeService() ? 'Submit Request' : 'Submit Payment';
     }
 }
 
@@ -833,3 +865,22 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.key === 'Escape' && overlay && !overlay.hidden) closeGcashModal();
     });
 });
+/* A service with price 0 or empty is free: no Scan & Pay step */
+function isFreeService() {
+    return !!currentService && !(Number(currentService.price) > 0);
+}
+/* Upload Proof body: payment fields for paid services, a plain confirm for free ones */
+function setProofMode() {
+    var free = isFreeService();
+    var zone = document.getElementById('gmUploadZone');
+    var refRow = document.querySelector('#gmBodyStep2 .gm-ref-row');
+    var hint = document.querySelector('#gmBodyStep2 .gm-step-hint');
+    var btn = document.querySelector('#gmBodyStep2 .gm-btn-next');
+    if (zone) zone.style.display = free ? 'none' : '';
+    if (refRow) refRow.style.display = free ? 'none' : '';
+    if (hint) {
+        if (!hint.dataset.orig) hint.dataset.orig = hint.textContent;
+        hint.textContent = free ? 'This service is free. Confirm to send your request.' : hint.dataset.orig;
+    }
+    if (btn) btn.textContent = free ? 'Submit Request' : 'Submit Payment';
+}

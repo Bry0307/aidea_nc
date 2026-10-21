@@ -23,7 +23,9 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
         rel="stylesheet" />
-    <link rel="stylesheet" href="dashboard.css" />
+    <link rel="stylesheet" href="dashboard.css?v=2" />
+    <link rel="icon" type="image/png" sizes="32x32" href="../shared/logo-32.png" />
+    <link rel="apple-touch-icon" href="../shared/logo-180.png" />
 </head>
 
 <body>
@@ -31,15 +33,7 @@
     <!-- SIDEBAR -->
     <aside class="sidebar" id="sidebar" aria-label="Main navigation">
         <a class="sidebar-brand" href="../dashboard/dashboard.html" aria-label="AIDEA Admin home">
-            <span class="brand-mark" aria-hidden="true">
-                <svg viewBox="0 0 32 32" width="32" height="32" fill="none">
-                    <rect width="32" height="32" rx="9" fill="#FFC72C" />
-                    <path d="M9 22.5 16 8l7 14.5" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round"
-                        stroke-linejoin="round" />
-                    <path d="M11.8 18h8.4" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round" />
-                    <circle cx="16" cy="8" r="1.9" fill="#2563eb" />
-                </svg>
-            </span>
+            <span class="brand-mark" aria-hidden="true"><img src="../shared/logo-64.png" alt="" width="32" height="32" style="display:block;object-fit:contain"></span>
             <span class="brand-text">
                 <span class="brand-name">AIDEA Admin</span>
                 <span class="brand-sub">Norzagaray College</span>
@@ -50,23 +44,21 @@
             <p class="nav-heading">Overview</p>
             <nav class="nav-group">
                 <a href="../dashboard/dashboard.html" class="active" aria-current="page">Dashboard</a>
-                <a href="../Report generator/Report_generator.html">Report Generator</a>
             </nav>
 
             <p class="nav-heading">Management</p>
             <nav class="nav-group">
-                <a href="../All students/all-students.html">All Students</a>
+                <a href="../All students/all-students.html">Users</a>
                 <a href="../Thesis submissions/Thesis_submissions.html">Thesis Submissions</a>
                 <a href="../File transfer/file_transfer.html">File Transfer</a>
-                <a href="../Payments/payment.html">Payments</a>
-                <a href="../Receipts/Receipts.html">Receipts</a>
+                <a href="../Payments/payment.html">Requests</a>
+                <a href="../Receipts/Receipts.html">Certificate</a>
                 <a href="../Services pricing/Services_pricing.html">Services &amp; Pricing</a>
             </nav>
 
             <p class="nav-heading">Quality</p>
             <nav class="nav-group">
                 <a href="../Satisfaction reports/Satisfaction_reports.html">Satisfaction Reports</a>
-                <a href="../Price audit log/Price_audit_log.html">Price Audit Log</a>
                 <a href="../formatting/formatting.html">Format Templates</a>
             </nav>
 
@@ -157,15 +149,16 @@
 
             <!-- CHARTS -->
             <section class="charts-row">
-                <div class="panel">
+                <div class="panel thesis-year-panel">
                     <div class="panel-head">
                         <div>
-                            <h3 class="panel-title">Revenue</h3>
-                            <p class="panel-sub" id="revenueYear">Completed payments by month</p>
+                            <h3 class="panel-title">Thesis submissions by academic year</h3>
+                            <p class="panel-sub" id="revenueYear" aria-live="polite">Loading submission totals...</p>
                         </div>
+                        <div class="thesis-total" aria-label="Total thesis submissions"><strong id="thesisYearTotal">--</strong><span>total submissions</span></div>
                     </div>
-                    <div class="chart-box"><canvas id="revenueChart" aria-label="Monthly revenue line chart"
-                            role="img"></canvas></div>
+                    <div class="thesis-chart-viewport"><div class="chart-box"><canvas id="thesisYearChart" aria-label="Thesis submitted per academic year bar chart"
+                            role="img"></canvas></div></div>
                 </div>
 
                 <div class="panel">
@@ -232,7 +225,8 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <script src="dashboard.js"></script>
+    <script src="dashboard.js?v=2"></script>
+<script src="../shared/sidebar_toggle.js"></script>
 </body>
 
 </html>

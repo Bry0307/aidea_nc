@@ -224,7 +224,6 @@ if (!empty($user->archived_at)) {
                 "is_verified" => $user->is_verified,
                 "is_admin" => $user->is_admin,
                 "role" => $user->role,
-                "avatar_url" => $user->avatar_url,
             ],
         ]);
     }
@@ -247,7 +246,6 @@ if (!empty($user->archived_at)) {
             "is_verified" => $user->is_verified,
             "is_admin" => $user->is_admin,
             "role" => $user->role,
-            "avatar_url" => $user->avatar_url,
         ]);
     }
 

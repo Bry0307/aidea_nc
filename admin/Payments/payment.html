@@ -5,7 +5,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0a1a3f" />
-    <title>Payments — AIDEA Admin</title>
+    <title>Requests — AIDEA Admin</title>
 
     <!-- Apply saved / system theme BEFORE paint (same key as the dashboard: aidea_theme) -->
     <script>
@@ -24,6 +24,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
         rel="stylesheet" />
     <link rel="stylesheet" href="payment.css" />
+    <link rel="icon" type="image/png" sizes="32x32" href="../shared/logo-32.png" />
+    <link rel="apple-touch-icon" href="../shared/logo-180.png" />
 </head>
 
 <body>
@@ -31,15 +33,7 @@
     <!-- SIDEBAR -->
     <aside class="sidebar" id="sidebar" aria-label="Main navigation">
         <a class="sidebar-brand" href="../dashboard/dashboard.html" aria-label="AIDEA Admin home">
-            <span class="brand-mark" aria-hidden="true">
-                <svg viewBox="0 0 32 32" width="32" height="32" fill="none">
-                    <rect width="32" height="32" rx="9" fill="#FFC72C" />
-                    <path d="M9 22.5 16 8l7 14.5" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round"
-                        stroke-linejoin="round" />
-                    <path d="M11.8 18h8.4" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round" />
-                    <circle cx="16" cy="8" r="1.9" fill="#2563eb" />
-                </svg>
-            </span>
+            <span class="brand-mark" aria-hidden="true"><img src="../shared/logo-64.png" alt="" width="32" height="32" style="display:block;object-fit:contain"></span>
             <span class="brand-text">
                 <span class="brand-name">AIDEA Admin</span>
                 <span class="brand-sub">Norzagaray College</span>
@@ -50,23 +44,21 @@
             <p class="nav-heading">Overview</p>
             <nav class="nav-group">
                 <a href="../dashboard/dashboard.html">Dashboard</a>
-                <a href="../Report generator/Report_generator.html">Report Generator</a>
             </nav>
 
             <p class="nav-heading">Management</p>
             <nav class="nav-group">
-                <a href="../All students/all-students.html">All Students</a>
+                <a href="../All students/all-students.html">Users</a>
                 <a href="../Thesis submissions/Thesis_submissions.html">Thesis Submissions</a>
                 <a href="../File transfer/file_transfer.html">File Transfer</a>
-                <a href="../Payments/payment.html" class="active" aria-current="page">Payments</a>
-                <a href="../Receipts/Receipts.html">Receipts</a>
+                <a href="../Payments/payment.html" class="active" aria-current="page">Requests</a>
+                <a href="../Receipts/Receipts.html">Certificate</a>
                 <a href="../Services pricing/Services_pricing.html">Services &amp; Pricing</a>
             </nav>
 
             <p class="nav-heading">Quality</p>
             <nav class="nav-group">
                 <a href="../Satisfaction reports/Satisfaction_reports.html">Satisfaction Reports</a>
-                <a href="../Price audit log/Price_audit_log.html">Price Audit Log</a>
                 <a href="../formatting/formatting.html">Format Templates</a>
             </nav>
 
@@ -119,7 +111,7 @@
                     </svg>
                 </button>
                 <div class="page-title">
-                    <h1>Payments <span class="badge-admin">Admin</span></h1>
+                    <h1>Requests <span class="badge-admin">Admin</span></h1>
                     <p>Norzagaray College — AIDEA Control Panel</p>
                 </div>
             </div>
@@ -144,8 +136,7 @@
 
             <div class="page-head">
                 <div>
-                    <h2>Payments</h2>
-                    <p>Review GCash payments and approve or reject pending ones.</p>
+                    <h2>Requests</h2>
                 </div>
             </div>
 
@@ -154,7 +145,8 @@
             <div class="toolbar">
                 <input type="text" class="form-control search-input" id="searchInput"
                     placeholder="Search by student or GCash ref" />
-                <select class="form-control filter-select" id="filterStatus" aria-label="Filter by status">
+                <select class="form-control filter-select" id="filterService" aria-label="Filter by service"><option value="">All services</option></select>
+                    <select class="form-control filter-select" id="filterStatus" aria-label="Filter by status" style="display:none">
                     <option value="">All status</option>
                     <option value="Completed">Completed</option>
                     <option value="Pending">Pending</option>
@@ -175,18 +167,28 @@
                                 <th>Status</th>
                                 <th>Date</th>
                                 <th>Actions</th>
-                                <th>Send files</th>
                             </tr>
                         </thead>
                         <tbody id="paymentsBody">
                             <tr>
-                                <td colspan="8" class="empty">Loading…</td>
+                                <td colspan="7" class="empty">Loading…</td>
                             </tr>
                         </tbody>
                     </table>
                 </div>
             </section>
 
+        <section class="panel ac-panel" hidden style="display:none">
+                <div class="ac-head">
+                    <h3>Sent certificates &amp; files</h3>
+                    <p>Everything you have sent to students.</p>
+                </div>
+                <div class="cert-tabs" id="certTabs">
+                    <button type="button" class="cert-tab active" data-cert-tab="certificates">Certificates <span class="cert-count" id="countCert">0</span></button>
+                    <button type="button" class="cert-tab" data-cert-tab="files">Files <span class="cert-count" id="countFiles">0</span></button>
+                </div>
+                <div class="ac-grid" id="acGrid"></div>
+            </section>
         </main>
     </div>
 
@@ -206,7 +208,10 @@
         </div>
     </div>
 
-    <script src="payment.js"></script>
+    <script src="../formatting/testvalidator.js"></script>
+    <script src="../Receipts/CertGen.js"></script>
+<script src="payment.js"></script>
+<script src="../shared/sidebar_toggle.js"></script>
 </body>
 
 </html>

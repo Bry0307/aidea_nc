@@ -13,8 +13,6 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class User extends Authenticatable implements MustVerifyEmail
 {
-    use \App\Models\Concerns\HasAvatar;
-
     use HasApiTokens, HasFactory, Notifiable;
 
     protected $fillable = [
@@ -38,22 +36,6 @@ class User extends Authenticatable implements MustVerifyEmail
         'is_admin' => 'boolean',
         'email_verified_at' => 'datetime',
     ];
-
-    protected static function booted(): void
-    {
-        static::saving(function (User $user) {
-            if ($user->isDirty(['fname', 'mi', 'lname']) || blank($user->full_name)) {
-                $name = implode(' ', array_filter(array_map(
-                    fn ($part) => trim((string) $part),
-                    [$user->fname, $user->mi, $user->lname]
-                ), fn ($part) => $part !== ''));
-
-                if ($name !== '') {
-                    $user->full_name = $name;
-                }
-            }
-        });
-    }
 
     /*
      * Sanctum / Laravel Auth uses $this->password internally.

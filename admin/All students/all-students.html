@@ -5,7 +5,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0a1a3f" />
-    <title>All Students — AIDEA Admin</title>
+    <title>Users — AIDEA Admin</title>
 
     <!-- Apply saved / system theme BEFORE paint to avoid a white flash in dark mode -->
     <script>
@@ -27,6 +27,8 @@
     <!-- Shared shell (tokens, sidebar, topbar, panels, tables, modal) + page-specific styles -->
     <link rel="stylesheet" href="../dashboard/dashboard.css" />
     <link rel="stylesheet" href="all-students.css" />
+    <link rel="icon" type="image/png" sizes="32x32" href="../shared/logo-32.png" />
+    <link rel="apple-touch-icon" href="../shared/logo-180.png" />
 </head>
 
 <body>
@@ -34,15 +36,7 @@
     <!-- SIDEBAR -->
     <aside class="sidebar" id="sidebar" aria-label="Main navigation">
         <a class="sidebar-brand" href="../dashboard/dashboard.html" aria-label="AIDEA Admin home">
-            <span class="brand-mark" aria-hidden="true">
-                <svg viewBox="0 0 32 32" width="32" height="32" fill="none">
-                    <rect width="32" height="32" rx="9" fill="#FFC72C" />
-                    <path d="M9 22.5 16 8l7 14.5" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round"
-                        stroke-linejoin="round" />
-                    <path d="M11.8 18h8.4" stroke="#0a1a3f" stroke-width="2.6" stroke-linecap="round" />
-                    <circle cx="16" cy="8" r="1.9" fill="#2563eb" />
-                </svg>
-            </span>
+            <span class="brand-mark" aria-hidden="true"><img src="../shared/logo-64.png" alt="" width="32" height="32" style="display:block;object-fit:contain"></span>
             <span class="brand-text">
                 <span class="brand-name">AIDEA Admin</span>
                 <span class="brand-sub">Norzagaray College</span>
@@ -53,23 +47,21 @@
             <p class="nav-heading">Overview</p>
             <nav class="nav-group">
                 <a href="../dashboard/dashboard.html">Dashboard</a>
-                <a href="../Report generator/Report_generator.html">Report Generator</a>
             </nav>
 
             <p class="nav-heading">Management</p>
             <nav class="nav-group">
-                <a href="../All students/all-students.html" class="active" aria-current="page">All Students</a>
+                <a href="../All students/all-students.html" class="active" aria-current="page">Users</a>
                 <a href="../Thesis submissions/Thesis_submissions.html">Thesis Submissions</a>
                 <a href="../File transfer/file_transfer.html">File Transfer</a>
-                <a href="../Payments/payment.html">Payments</a>
-                <a href="../Receipts/Receipts.html">Receipts</a>
+                <a href="../Payments/payment.html">Requests</a>
+                <a href="../Receipts/Receipts.html">Certificate</a>
                 <a href="../Services pricing/Services_pricing.html">Services &amp; Pricing</a>
             </nav>
 
             <p class="nav-heading">Quality</p>
             <nav class="nav-group">
                 <a href="../Satisfaction reports/Satisfaction_reports.html">Satisfaction Reports</a>
-                <a href="../Price audit log/Price_audit_log.html">Price Audit Log</a>
                 <a href="../formatting/formatting.html">Format Templates</a>
             </nav>
 
@@ -122,7 +114,7 @@
                     </svg>
                 </button>
                 <div class="page-title">
-                    <h1>All Students <span class="badge-admin">Admin</span></h1>
+                    <h1>Users <span class="badge-admin">Admin</span></h1>
                     <p>Norzagaray College — AIDEA Control Panel</p>
                 </div>
             </div>
@@ -147,7 +139,7 @@
 
             <div class="page-head">
                 <div>
-                    <h2>Students</h2>
+                    <h2 id="viewTitle" style="display:none"></h2>
                     <p id="studentCount">Loading students…</p>
                 </div>
             </div>
@@ -158,7 +150,14 @@
                 <input type="search" class="search-input" id="searchInput" placeholder="Search by name or email"
                     autocomplete="off" />
 
-                <button class="btn-primary" id="addStudentBtn" type="button">Add student</button>
+                <select class="btn-primary" id="roleFilter" aria-label="Filter by account type">
+                    <option value="all">All users</option>
+                    <option value="students">Students</option>
+                    <option value="experts">Experts</option>
+                    <option value="librarian">Librarian</option>
+                </select>
+                <button class="btn-primary" id="archiveViewBtn" type="button">Archive</button>
+                <button class="btn-primary" id="expertBtn" type="button">Expert accounts</button>
             </div>
 
             <!-- STUDENTS TABLE -->
@@ -170,6 +169,7 @@
                                 <th>No.</th>
                                 <th>Name</th>
                                 <th>Email</th>
+                                <th id="actionsTh" hidden>Actions</th>
                             </tr>
                         </thead>
                         <tbody id="studentsBody">
@@ -298,7 +298,65 @@
         </div>
     </div>
 
-    <!-- SIGN OUT CONFIRMATION MODAL -->
+    <!-- EXPERT ACCOUNTS MODAL -->
+        <div class="modal-backdrop" id="expModal" hidden>
+            <div class="modal" role="dialog" aria-modal="true" aria-labelledby="expTitle">
+                <div class="exp-head"><h3 class="modal-title" id="expTitle">Expert accounts</h3><button class="exp-x" id="expClose" type="button" aria-label="Close"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+                <p class="modal-text">Create login access for statisticians and grammarians.</p>
+                <form id="expForm" novalidate>
+                    <div class="exp-row">
+                        <div class="exp-field"><label for="expFname">First name</label><input type="text" id="expFname" autocomplete="off" /></div>
+                        <div class="exp-field"><label for="expLname">Last name</label><input type="text" id="expLname" autocomplete="off" /></div>
+                    </div>
+                    <div class="exp-field"><label for="expEmail">Email address</label><input type="email" id="expEmail" autocomplete="off" /></div>
+                    <div class="exp-field"><label for="expRole">Role</label>
+                        <select id="expRole"><option value="" disabled selected>Select a role</option><option value="statistician">Statistician</option><option value="grammarian">Grammarian</option></select>
+                    </div>
+                    <div class="exp-row">
+                        <div class="exp-field"><label for="expPass">Password</label><input type="password" id="expPass" autocomplete="new-password" /></div>
+                        <div class="exp-field"><label for="expPass2">Confirm password</label><input type="password" id="expPass2" autocomplete="new-password" /></div>
+                    </div>
+                    <p class="exp-msg" id="expMsg" role="status" aria-live="polite"></p>
+                    <div class="modal-actions">
+                        
+                        <button class="modal-btn modal-btn-primary" id="expSave" type="submit">Create account</button>
+                    </div>
+                </form>
+                <h4 class="exp-sub">Existing expert accounts</h4>
+                <div class="exp-table-wrap">
+                    <table>
+                        <thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead>
+                        <tbody id="expBody"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- CONFIRM MODAL -->
+        <div class="modal-backdrop" id="confirmModal" hidden>
+            <div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmText">
+                <h3 class="modal-title" id="confirmTitle">Are you sure?</h3>
+                <p class="modal-text" id="confirmText"></p>
+                <div class="modal-actions">
+                    <button class="modal-btn modal-btn-cancel" id="confirmCancel" type="button">Cancel</button>
+                    <button class="modal-btn modal-btn-primary" id="confirmOk" type="button">Confirm</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ROW DETAILS / ARCHIVE MODAL -->
+        <div class="modal-backdrop" id="rowModal" hidden>
+            <div class="modal" role="dialog" aria-modal="true" aria-labelledby="rowModalTitle">
+                <h3 class="modal-title" id="rowModalTitle">Student details</h3>
+                <div id="rowDetails"></div>
+                <div class="modal-actions">
+                    <button class="modal-btn modal-btn-cancel" id="rowCloseBtn" type="button">Close</button>
+                    <button class="modal-btn modal-btn-primary" id="rowArchiveBtn" type="button">Archive</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- SIGN OUT CONFIRMATION MODAL -->
     <div class="modal-backdrop" id="signOutModal" hidden>
         <div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="signOutTitle"
             aria-describedby="signOutDesc">
@@ -319,6 +377,8 @@
     </div>
 
     <script src="all-students.js"></script>
+<script src="../../user/shared/sidebar-avatar.js"></script>
+<script src="../shared/sidebar_toggle.js"></script>
 </body>
 
 </html>
